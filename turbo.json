@@ -1,0 +1,12 @@
+{
+  "name": "@stremio-addon-manager/core",
+  "version": "1.0.0",
+  "main": "src/index.js",
+  "dependencies": {
+    "node-ssh": "^13.0.0",
+    "axios": "^1.6.0",
+    "fs-extra": "^11.0.0",
+    "js-yaml": "^4.1.0",
+    "winston": "^3.11.0"
+  }
+}

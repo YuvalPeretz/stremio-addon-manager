@@ -1,0 +1,53 @@
+{
+  "name": "@stremio-addon-manager/core",
+  "version": "1.0.0",
+  "description": "Core shared logic for Stremio Addon Manager",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./os": {
+      "types": "./dist/os/index.d.ts",
+      "import": "./dist/os/index.js"
+    },
+    "./ssh": {
+      "types": "./dist/ssh/index.d.ts",
+      "import": "./dist/ssh/index.js"
+    },
+    "./service": {
+      "types": "./dist/service/index.d.ts",
+      "import": "./dist/service/index.js"
+    },
+    "./config": {
+      "types": "./dist/config/index.d.ts",
+      "import": "./dist/config/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "dev": "tsc --build --watch",
+    "clean": "rm -rf dist",
+    "type-check": "tsc --noEmit",
+    "lint": "eslint src --ext .ts",
+    "test": "jest"
+  },
+  "dependencies": {
+    "node-ssh": "^13.0.0",
+    "axios": "^1.6.0",
+    "fs-extra": "^11.0.0",
+    "js-yaml": "^4.1.0",
+    "winston": "^3.11.0",
+    "semver": "^7.5.0"
+  },
+  "devDependencies": {
+    "@types/fs-extra": "^11.0.0",
+    "@types/js-yaml": "^4.0.0",
+    "@types/node": "^20.10.0",
+    "@types/semver": "^7.5.0",
+    "typescript": "^5.3.3"
+  }
+}

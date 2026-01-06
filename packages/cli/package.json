@@ -1,0 +1,26 @@
+{
+  "name": "@stremio-addon-manager/cli",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "stremio-addon-manager": "./bin/cli.js"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "dev": "tsc --build --watch",
+    "clean": "rimraf dist .tsbuildinfo"
+  },
+  "dependencies": {
+    "@stremio-addon-manager/core": "^1.0.0",
+    "chalk": "^5.0.0",
+    "commander": "^11.0.0",
+    "inquirer": "^9.0.0",
+    "ora": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/chalk": "^0.4.31",
+    "@types/inquirer": "^9.0.9",
+    "@types/ora": "^3.1.0"
+  }
+}

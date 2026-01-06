@@ -1,0 +1,13 @@
+{
+  "name": "@stremio-addon-manager/addon-server",
+  "version": "1.0.0",
+  "main": "src/server.js",
+  "dependencies": {
+    "stremio-addon-sdk": "^1.6.0",
+    "express": "^4.18.0",
+    "cors": "^2.8.0",
+    "node-cache": "^5.1.0",
+    "express-rate-limit": "^7.0.0",
+    "axios": "^1.6.0"
+  }
+}

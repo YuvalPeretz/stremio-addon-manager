@@ -1,0 +1,568 @@
+{
+  "meta": {
+    "version": "1.0.0",
+    "description": "Complete command reference for Stremio Addon Manager installation and management across all supported operating systems",
+    "lastUpdated": "2026-01-04",
+    "supportedOS": [
+      "ubuntu",
+      "debian",
+      "raspberrypi",
+      "macos",
+      "windows"
+    ]
+  },
+  "ssh": {
+    "description": "SSH connectivity and key management",
+    "test_connection": {
+      "all": "ssh -o ConnectTimeout=10 -o BatchMode=yes {username}@{host} -p {port} 'echo \"Connection successful\"'"
+    },
+    "generate_key": {
+      "unix": "ssh-keygen -t ed25519 -f ~/.ssh/stremio_addon_key -N '' -C 'stremio-addon-manager'",
+      "windows": "ssh-keygen -t ed25519 -f %USERPROFILE%\\.ssh\\stremio_addon_key -N \"\" -C \"stremio-addon-manager\""
+    },
+    "copy_key": {
+      "unix": "ssh-copy-id -i ~/.ssh/stremio_addon_key.pub -p {port} {username}@{host}",
+      "windows": "type %USERPROFILE%\\.ssh\\stremio_addon_key.pub | ssh {username}@{host} -p {port} \"mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys\""
+    },
+    "test_key_auth": {
+      "unix": "ssh -i ~/.ssh/stremio_addon_key -o BatchMode=yes -p {port} {username}@{host} 'echo \"Key auth successful\"'",
+      "windows": "ssh -i %USERPROFILE%\\.ssh\\stremio_addon_key -o BatchMode=yes -p {port} {username}@{host} \"echo Key auth successful\""
+    },
+    "set_permissions": {
+      "unix": "chmod 600 ~/.ssh/stremio_addon_key && chmod 644 ~/.ssh/stremio_addon_key.pub"
+    }
+  },
+  "detection": {
+    "description": "OS and system detection commands",
+    "os": {
+      "unix": "uname -s",
+      "windows": "ver"
+    },
+    "architecture": {
+      "unix": "uname -m",
+      "windows": "wmic os get osarchitecture"
+    },
+    "distro": {
+      "linux": "cat /etc/os-release | grep '^ID=' | cut -d'=' -f2"
+    },
+    "system_info": {
+      "linux": {
+        "cpu_cores": "nproc",
+        "total_memory": "free -m | awk 'NR==2{print $2}'",
+        "available_memory": "free -m | awk 'NR==2{print $7}'",
+        "disk_total": "df -BG / | awk 'NR==2{print $2}' | sed 's/G//'",
+        "disk_available": "df -BG / | awk 'NR==2{print $4}' | sed 's/G//'"
+      },
+      "macos": {
+        "cpu_cores": "sysctl -n hw.ncpu",
+        "total_memory": "sysctl -n hw.memsize | awk '{print $0/1024/1024}'",
+        "disk_total": "df -g / | awk 'NR==2{print $2}'",
+        "disk_available": "df -g / | awk 'NR==2{print $4}'"
+      },
+      "windows": {
+        "cpu_cores": "wmic cpu get NumberOfCores /value",
+        "total_memory": "wmic computersystem get TotalPhysicalMemory /value",
+        "disk_total": "wmic logicaldisk get size /value",
+        "disk_available": "wmic logicaldisk get freespace /value"
+      }
+    },
+    "local_ip": {
+      "linux": "hostname -I | awk '{print $1}'",
+      "macos": "ipconfig getifaddr en0",
+      "windows": "ipconfig | findstr /i \"IPv4\" | findstr /v \"127.0.0.1\" | findstr /r \"[0-9][0-9]*\\.[0-9][0-9]*\\.[0-9][0-9]*\\.[0-9][0-9]*\""
+    },
+    "public_ip": {
+      "all": "curl -s https://api.ipify.org"
+    }
+  },
+  "prerequisites": {
+    "description": "Check and install required software",
+    "check": {
+      "node": {
+        "command": "node --version",
+        "min_version": "18.0.0"
+      },
+      "npm": {
+        "command": "npm --version",
+        "min_version": "9.0.0"
+      },
+      "nginx": {
+        "command": "nginx -v 2>&1",
+        "min_version": "1.18.0"
+      },
+      "git": {
+        "command": "git --version",
+        "min_version": "2.0.0"
+      },
+      "python3": {
+        "command": "python3 --version",
+        "min_version": "3.7.0"
+      },
+      "pip3": {
+        "command": "pip3 --version",
+        "min_version": "20.0.0"
+      },
+      "certbot": {
+        "command": "certbot --version",
+        "min_version": "1.0.0"
+      }
+    },
+    "install": {
+      "ubuntu": {
+        "update": "sudo apt-get update",
+        "node": "curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash - && sudo apt-get install -y nodejs",
+        "nginx": "sudo apt-get install -y nginx",
+        "git": "sudo apt-get install -y git",
+        "python3": "sudo apt-get install -y python3 python3-pip",
+        "certbot": "sudo pip3 install certbot certbot-dns-duckdns",
+        "fail2ban": "sudo apt-get install -y fail2ban",
+        "ufw": "sudo apt-get install -y ufw",
+        "all": "sudo apt-get update && sudo apt-get install -y nodejs npm nginx git python3 python3-pip && sudo pip3 install certbot certbot-dns-duckdns"
+      },
+      "debian": {
+        "update": "sudo apt-get update",
+        "node": "curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash - && sudo apt-get install -y nodejs",
+        "nginx": "sudo apt-get install -y nginx",
+        "git": "sudo apt-get install -y git",
+        "python3": "sudo apt-get install -y python3 python3-pip",
+        "certbot": "sudo pip3 install certbot certbot-dns-duckdns",
+        "fail2ban": "sudo apt-get install -y fail2ban",
+        "ufw": "sudo apt-get install -y ufw",
+        "all": "sudo apt-get update && sudo apt-get install -y nodejs npm nginx git python3 python3-pip && sudo pip3 install certbot certbot-dns-duckdns"
+      },
+      "raspberrypi": {
+        "update": "sudo apt-get update",
+        "node": "curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash - && sudo apt-get install -y nodejs",
+        "nginx": "sudo apt-get install -y nginx",
+        "git": "sudo apt-get install -y git",
+        "python3": "sudo apt-get install -y python3 python3-pip",
+        "certbot": "sudo pip3 install certbot certbot-dns-duckdns",
+        "fail2ban": "sudo apt-get install -y fail2ban",
+        "ufw": "sudo apt-get install -y ufw",
+        "all": "sudo apt-get update && sudo apt-get install -y nodejs npm nginx git python3 python3-pip && sudo pip3 install certbot certbot-dns-duckdns"
+      },
+      "macos": {
+        "homebrew": "/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"",
+        "node": "brew install node",
+        "nginx": "brew install nginx",
+        "git": "brew install git",
+        "python3": "brew install python3",
+        "certbot": "pip3 install certbot certbot-dns-duckdns",
+        "all": "brew install node nginx git python3 && pip3 install certbot certbot-dns-duckdns"
+      },
+      "windows": {
+        "chocolatey": "@\"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -InputFormat None -ExecutionPolicy Bypass -Command \"[System.Net.ServicePointManager]::SecurityProtocol = 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))\" && SET \"PATH=%PATH%;%ALLUSERSPROFILE%\\chocolatey\\bin\"",
+        "node": "choco install nodejs -y",
+        "nginx": "choco install nginx -y",
+        "git": "choco install git -y",
+        "python3": "choco install python3 -y",
+        "certbot": "pip3 install certbot certbot-dns-duckdns",
+        "nssm": "choco install nssm -y",
+        "all": "choco install nodejs nginx git python3 nssm -y && pip3 install certbot certbot-dns-duckdns"
+      }
+    }
+  },
+  "network": {
+    "description": "Network configuration and testing",
+    "duckdns": {
+      "test_token": "curl -s \"https://www.duckdns.org/update?domains={domain}&token={token}&ip=\" | grep -q 'OK'",
+      "update_ip": "curl -s \"https://www.duckdns.org/update?domains={domain}&token={token}&ip={ip}\"",
+      "get_current_ip": "curl -s \"https://www.duckdns.org/update?domains={domain}&token={token}&ip=\"",
+      "verify_domain": "curl -s \"https://www.duckdns.org/update?domains={domain}&token={token}&verbose=true\""
+    },
+    "dns": {
+      "resolve": "nslookup {domain}",
+      "resolve_duckdns": "nslookup {domain}.duckdns.org",
+      "test_resolution": "ping -c 1 {domain}",
+      "check_a_record": "dig +short {domain} A",
+      "check_propagation": "curl -s https://dns.google/resolve?name={domain}&type=A"
+    },
+    "custom_domain": {
+      "verify_dns": "dig +short {domain} A",
+      "test_accessible": "curl -I http://{domain} 2>&1",
+      "check_ssl": "echo | openssl s_client -servername {domain} -connect {domain}:443 2>/dev/null | openssl x509 -noout -dates"
+    },
+    "static_ip": {
+      "get_public_ip": "curl -s https://api.ipify.org",
+      "test_public_access": "curl -I http://{ip} 2>&1",
+      "check_port_external": "nc -zv -w 5 {ip} {port} 2>&1"
+    },
+    "local": {
+      "get_local_ip": {
+        "linux": "hostname -I | awk '{print $1}'",
+        "macos": "ipconfig getifaddr en0 || ipconfig getifaddr en1",
+        "windows": "ipconfig | findstr /i \"IPv4\" | findstr /v \"127.0.0.1\""
+      },
+      "test_local_access": "curl -I http://{local_ip}:{port} 2>&1",
+      "check_lan_connectivity": "ping -c 1 {local_ip}"
+    },
+    "ports": {
+      "test_port_open": "nc -zv {host} {port} 2>&1",
+      "check_port_listening": {
+        "linux": "sudo netstat -tlnp | grep ':{port}'",
+        "macos": "lsof -iTCP:{port} -sTCP:LISTEN",
+        "windows": "netstat -ano | findstr :{port}"
+      },
+      "find_process_on_port": {
+        "linux": "sudo lsof -i :{port} -t",
+        "macos": "lsof -i :{port} -t",
+        "windows": "netstat -ano | findstr :{port} | findstr LISTENING"
+      },
+      "test_port_forwarding": "curl -I http://{public_ip}:{port} --connect-timeout 5 2>&1"
+    }
+  },
+  "firewall": {
+    "description": "Firewall configuration",
+    "ufw": {
+      "check_installed": "which ufw",
+      "status": "sudo ufw status",
+      "enable": "sudo ufw --force enable",
+      "disable": "sudo ufw disable",
+      "default_deny": "sudo ufw default deny incoming",
+      "default_allow": "sudo ufw default allow outgoing",
+      "allow_ssh": "sudo ufw allow 22/tcp",
+      "allow_http": "sudo ufw allow 80/tcp",
+      "allow_https": "sudo ufw allow 443/tcp",
+      "allow_custom": "sudo ufw allow {port}/{protocol}",
+      "allow_from_ip": "sudo ufw allow from {ip} to any port {port}",
+      "delete_rule": "sudo ufw delete allow {port}/{protocol}",
+      "reset": "sudo ufw --force reset"
+    },
+    "windows": {
+      "check_status": "netsh advfirewall show allprofiles",
+      "enable": "netsh advfirewall set allprofiles state on",
+      "disable": "netsh advfirewall set allprofiles state off",
+      "allow_http": "netsh advfirewall firewall add rule name=\"Stremio Addon HTTP\" dir=in action=allow protocol=TCP localport=80",
+      "allow_https": "netsh advfirewall firewall add rule name=\"Stremio Addon HTTPS\" dir=in action=allow protocol=TCP localport=443",
+      "allow_custom": "netsh advfirewall firewall add rule name=\"{name}\" dir=in action=allow protocol=TCP localport={port}",
+      "delete_rule": "netsh advfirewall firewall delete rule name=\"{name}\"",
+      "reset": "netsh advfirewall reset"
+    },
+    "macos": {
+      "check_status": "sudo pfctl -s info",
+      "enable": "sudo pfctl -e",
+      "disable": "sudo pfctl -d",
+      "reload": "sudo pfctl -f /etc/pf.conf"
+    }
+  },
+  "fail2ban": {
+    "description": "Intrusion prevention (Linux only)",
+    "install": "sudo apt-get install -y fail2ban",
+    "status": "sudo systemctl status fail2ban",
+    "start": "sudo systemctl start fail2ban",
+    "stop": "sudo systemctl stop fail2ban",
+    "restart": "sudo systemctl restart fail2ban",
+    "enable": "sudo systemctl enable fail2ban",
+    "check_jails": "sudo fail2ban-client status",
+    "check_ssh_jail": "sudo fail2ban-client status sshd",
+    "unban_ip": "sudo fail2ban-client set sshd unbanip {ip}"
+  },
+  "git": {
+    "description": "Git operations for addon repository",
+    "clone": "git clone {repo_url} {directory}",
+    "pull": "cd {directory} && git pull origin main",
+    "checkout": "cd {directory} && git checkout {branch}",
+    "get_version": "cd {directory} && git describe --tags --abbrev=0",
+    "get_commit": "cd {directory} && git rev-parse HEAD"
+  },
+  "node": {
+    "description": "Node.js and npm operations",
+    "install_dependencies": "cd {directory} && npm install --production",
+    "install_dev_dependencies": "cd {directory} && npm install",
+    "update_dependencies": "cd {directory} && npm update",
+    "check_outdated": "cd {directory} && npm outdated",
+    "run_script": "cd {directory} && npm run {script}",
+    "test": "cd {directory} && npm test"
+  },
+  "addon": {
+    "description": "Addon server management",
+    "create_env": {
+      "unix": "cat > {directory}/.env << 'EOL'\nRD_API_TOKEN={rd_token}\nADDON_PASSWORD={password}\nPORT={port}\nNODE_ENV=production\nEOL",
+      "windows": "(echo RD_API_TOKEN={rd_token} && echo ADDON_PASSWORD={password} && echo PORT={port} && echo NODE_ENV=production) > {directory}\\.env"
+    },
+    "test_server": "cd {directory} && node server.js &",
+    "test_endpoints": {
+      "landing": "curl -s -o /dev/null -w \"%{http_code}\" http://localhost:{port}/",
+      "manifest": "curl -s -o /dev/null -w \"%{http_code}\" http://localhost:{port}/{password}/manifest.json",
+      "stats": "curl -s http://localhost:{port}/stats"
+    }
+  },
+  "nginx": {
+    "description": "Nginx reverse proxy configuration",
+    "linux": {
+      "test_config": "sudo nginx -t",
+      "reload": "sudo systemctl reload nginx",
+      "restart": "sudo systemctl restart nginx",
+      "start": "sudo systemctl start nginx",
+      "stop": "sudo systemctl stop nginx",
+      "status": "sudo systemctl status nginx",
+      "enable": "sudo systemctl enable nginx",
+      "create_config": "sudo tee /etc/nginx/sites-available/stremio-addon > /dev/null",
+      "enable_site": "sudo ln -sf /etc/nginx/sites-available/stremio-addon /etc/nginx/sites-enabled/",
+      "disable_site": "sudo rm -f /etc/nginx/sites-enabled/stremio-addon",
+      "remove_default": "sudo rm -f /etc/nginx/sites-enabled/default"
+    },
+    "macos": {
+      "test_config": "nginx -t",
+      "reload": "nginx -s reload",
+      "restart": "brew services restart nginx",
+      "start": "brew services start nginx",
+      "stop": "brew services stop nginx",
+      "create_config": "tee /usr/local/etc/nginx/servers/stremio-addon.conf > /dev/null"
+    },
+    "windows": {
+      "test_config": "nginx -t",
+      "reload": "nginx -s reload",
+      "start": "start nginx",
+      "stop": "nginx -s stop",
+      "create_config": "type nul > C:\\nginx\\conf\\servers\\stremio-addon.conf"
+    },
+    "config_http": "server {\n    listen 80;\n    server_name {domain};\n    location / {\n        proxy_pass http://localhost:{port};\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection 'upgrade';\n        proxy_set_header Host $host;\n        proxy_cache_bypass $http_upgrade;\n    }\n}",
+    "config_https": "server {\n    listen 80;\n    server_name {domain};\n    return 301 https://$server_name$request_uri;\n}\n\nserver {\n    listen 443 ssl http2;\n    server_name {domain};\n\n    ssl_certificate /etc/letsencrypt/live/{domain}/fullchain.pem;\n    ssl_certificate_key /etc/letsencrypt/live/{domain}/privkey.pem;\n\n    location / {\n        proxy_pass http://localhost:{port};\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection 'upgrade';\n        proxy_set_header Host $host;\n        proxy_cache_bypass $http_upgrade;\n    }\n}"
+  },
+  "ssl": {
+    "description": "SSL certificate management with certbot or self-signed",
+    "letsencrypt": {
+      "create_credentials_file_duckdns": {
+        "unix": "mkdir -p {credentials_dir} && cat > {credentials_file} << 'EOL'\ndns_duckdns_token={duckdns_token}\nEOL\nchmod 600 {credentials_file}"
+      },
+      "obtain_certificate_duckdns": "sudo certbot certonly --non-interactive --agree-tos --email {email} --preferred-challenges dns --authenticator dns-duckdns --dns-duckdns-credentials {credentials_file} --dns-duckdns-propagation-seconds 60 -d {domain}",
+      "obtain_certificate_custom_domain": "sudo certbot certonly --non-interactive --agree-tos --email {email} --preferred-challenges http --webroot -w /var/www/html -d {domain}",
+      "obtain_certificate_staging": "sudo certbot certonly --non-interactive --agree-tos --staging --email {email} --preferred-challenges dns --authenticator dns-duckdns --dns-duckdns-credentials {credentials_file} --dns-duckdns-propagation-seconds 60 -d {domain}",
+      "renew": "sudo certbot renew",
+      "renew_dry_run": "sudo certbot renew --dry-run",
+      "list_certificates": "sudo certbot certificates",
+      "delete_certificate": "sudo certbot delete --cert-name {domain}",
+      "check_auto_renewal": {
+        "linux": "sudo systemctl status certbot.timer",
+        "macos": "sudo launchctl list | grep certbot"
+      }
+    },
+    "self_signed": {
+      "note": "⚠️ WARNING: Self-signed certificates will NOT work with Stremio. These commands are for reference/testing only.",
+      "generate_certificate": "openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout {key_file} -out {cert_file} -subj \"/C=US/ST=State/L=City/O=Organization/CN={domain_or_ip}\"",
+      "generate_with_san": "openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout {key_file} -out {cert_file} -extensions v3_req -config <(cat /etc/ssl/openssl.cnf <(printf \"[v3_req]\\nsubjectAltName=IP:{ip}\"))",
+      "verify_certificate": "openssl x509 -in {cert_file} -text -noout",
+      "check_expiry": "openssl x509 -in {cert_file} -noout -enddate"
+    },
+    "test_certificate": "echo | openssl s_client -servername {domain} -connect {domain}:443 2>/dev/null | openssl x509 -noout -dates",
+    "test_certificate_ip": "echo | openssl s_client -connect {ip}:443 2>/dev/null | openssl x509 -noout -dates"
+  },
+  "service": {
+    "description": "Service management (systemd, launchd, Windows Service)",
+    "systemd": {
+      "create_service_file": "sudo tee /etc/systemd/system/stremio-addon.service > /dev/null",
+      "daemon_reload": "sudo systemctl daemon-reload",
+      "enable": "sudo systemctl enable stremio-addon",
+      "disable": "sudo systemctl disable stremio-addon",
+      "is_enabled": "sudo systemctl is-enabled stremio-addon",
+      "start": "sudo systemctl start stremio-addon",
+      "stop": "sudo systemctl stop stremio-addon",
+      "restart": "sudo systemctl restart stremio-addon",
+      "status": "sudo systemctl status stremio-addon",
+      "is_active": "sudo systemctl is-active stremio-addon",
+      "logs": "sudo journalctl -u stremio-addon -n {lines}",
+      "logs_follow": "sudo journalctl -u stremio-addon -f",
+      "service_file_content": "[Unit]\nDescription=Stremio Addon Server\nAfter=network.target\n\n[Service]\nType=simple\nUser={user}\nWorkingDirectory={directory}\nEnvironment=\"NODE_ENV=production\"\nEnvironment=\"RD_API_TOKEN={rd_token}\"\nEnvironment=\"ADDON_PASSWORD={password}\"\nEnvironment=\"PORT={port}\"\nExecStart=/usr/bin/node server.js\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=multi-user.target"
+    },
+    "launchd": {
+      "create_plist": "tee ~/Library/LaunchAgents/com.stremio.addon.plist > /dev/null",
+      "load": "launchctl load ~/Library/LaunchAgents/com.stremio.addon.plist",
+      "unload": "launchctl unload ~/Library/LaunchAgents/com.stremio.addon.plist",
+      "enable": "launchctl load -w ~/Library/LaunchAgents/com.stremio.addon.plist",
+      "disable": "launchctl unload -w ~/Library/LaunchAgents/com.stremio.addon.plist",
+      "start": "launchctl start com.stremio.addon",
+      "stop": "launchctl stop com.stremio.addon",
+      "list": "launchctl list | grep com.stremio.addon",
+      "check_enabled": "launchctl list | grep com.stremio.addon",
+      "plist_content": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n    <key>Label</key>\n    <string>com.stremio.addon</string>\n    <key>ProgramArguments</key>\n    <array>\n        <string>/usr/local/bin/node</string>\n        <string>{directory}/server.js</string>\n    </array>\n    <key>RunAtLoad</key>\n    <true/>\n    <key>KeepAlive</key>\n    <true/>\n    <key>WorkingDirectory</key>\n    <string>{directory}</string>\n    <key>EnvironmentVariables</key>\n    <dict>\n        <key>NODE_ENV</key>\n        <string>production</string>\n        <key>RD_API_TOKEN</key>\n        <string>{rd_token}</string>\n        <key>ADDON_PASSWORD</key>\n        <string>{password}</string>\n        <key>PORT</key>\n        <string>{port}</string>\n    </dict>\n    <key>StandardOutPath</key>\n    <string>/tmp/stremio-addon.log</string>\n    <key>StandardErrorPath</key>\n    <string>/tmp/stremio-addon-error.log</string>\n</dict>\n</plist>"
+    },
+    "windows": {
+      "install_service": "nssm install StremioAddon \"{node_path}\" \"{directory}\\server.js\"",
+      "set_directory": "nssm set StremioAddon AppDirectory \"{directory}\"",
+      "set_env": "nssm set StremioAddon AppEnvironmentExtra NODE_ENV=production RD_API_TOKEN={rd_token} ADDON_PASSWORD={password} PORT={port}",
+      "set_startup_auto": "nssm set StremioAddon Start SERVICE_AUTO_START",
+      "set_startup_manual": "nssm set StremioAddon Start SERVICE_DEMAND_START",
+      "get_startup": "nssm get StremioAddon Start",
+      "start": "nssm start StremioAddon",
+      "stop": "nssm stop StremioAddon",
+      "restart": "nssm restart StremioAddon",
+      "status": "nssm status StremioAddon",
+      "remove": "nssm remove StremioAddon confirm"
+    }
+  },
+  "duckdns_updater": {
+    "description": "Automatic DuckDNS IP updater",
+    "create_script": {
+      "unix": "cat > {script_path} << 'EOL'\n#!/bin/bash\ncurl -s \"https://www.duckdns.org/update?domains={domain}&token={token}&ip=\" >/dev/null 2>&1\nEOL\nchmod +x {script_path}"
+    },
+    "cron": {
+      "add": "(crontab -l 2>/dev/null; echo \"*/5 * * * * {script_path} >/dev/null 2>&1\") | crontab -",
+      "remove": "crontab -l | grep -v '{script_path}' | crontab -",
+      "list": "crontab -l"
+    },
+    "systemd_timer": {
+      "create_service": "sudo tee /etc/systemd/system/duckdns-update.service > /dev/null",
+      "create_timer": "sudo tee /etc/systemd/system/duckdns-update.timer > /dev/null",
+      "enable": "sudo systemctl enable duckdns-update.timer",
+      "start": "sudo systemctl start duckdns-update.timer",
+      "status": "sudo systemctl status duckdns-update.timer",
+      "service_content": "[Unit]\nDescription=Update DuckDNS IP\n\n[Service]\nType=oneshot\nExecStart=/usr/bin/curl -s \"https://www.duckdns.org/update?domains={domain}&token={token}&ip=\"",
+      "timer_content": "[Unit]\nDescription=Update DuckDNS IP every 5 minutes\n\n[Timer]\nOnBootSec=1min\nOnUnitActiveSec=5min\n\n[Install]\nWantedBy=timers.target"
+    },
+    "windows_task": {
+      "create": "schtasks /create /tn \"DuckDNS Update\" /tr \"curl -s https://www.duckdns.org/update?domains={domain}&token={token}&ip=\" /sc minute /mo 5 /f",
+      "delete": "schtasks /delete /tn \"DuckDNS Update\" /f",
+      "query": "schtasks /query /tn \"DuckDNS Update\""
+    }
+  },
+  "backup": {
+    "description": "Backup and restore operations",
+    "create": {
+      "unix": "tar -czf {backup_file} -C / {addon_dir} {nginx_config} {service_file} {env_file} {credentials_file}",
+      "windows": "powershell Compress-Archive -Path {addon_dir},{nginx_config},{env_file} -DestinationPath {backup_file}"
+    },
+    "list": {
+      "unix": "ls -lht {backup_dir} | grep .tar.gz",
+      "windows": "dir {backup_dir}\\*.zip /o-d"
+    },
+    "restore": {
+      "unix": "tar -xzf {backup_file} -C /",
+      "windows": "powershell Expand-Archive -Path {backup_file} -DestinationPath C:\\ -Force"
+    },
+    "delete": {
+      "unix": "rm {backup_file}",
+      "windows": "del {backup_file}"
+    },
+    "scheduled": {
+      "cron_daily": "(crontab -l 2>/dev/null; echo \"0 2 * * * {backup_script} >/dev/null 2>&1\") | crontab -",
+      "cron_weekly": "(crontab -l 2>/dev/null; echo \"0 2 * * 0 {backup_script} >/dev/null 2>&1\") | crontab -"
+    }
+  },
+  "logs": {
+    "description": "Log management and viewing",
+    "service_logs": {
+      "systemd": "sudo journalctl -u stremio-addon -n {lines}",
+      "systemd_follow": "sudo journalctl -u stremio-addon -f",
+      "launchd": "tail -n {lines} /tmp/stremio-addon.log",
+      "launchd_follow": "tail -f /tmp/stremio-addon.log",
+      "windows": "Get-Content {log_file} -Tail {lines}",
+      "windows_follow": "Get-Content {log_file} -Wait"
+    },
+    "nginx_logs": {
+      "access": {
+        "linux": "sudo tail -n {lines} /var/log/nginx/access.log",
+        "macos": "tail -n {lines} /usr/local/var/log/nginx/access.log"
+      },
+      "error": {
+        "linux": "sudo tail -n {lines} /var/log/nginx/error.log",
+        "macos": "tail -n {lines} /usr/local/var/log/nginx/error.log"
+      }
+    },
+    "filter": {
+      "by_level": "grep '{level}' {log_file}",
+      "by_keyword": "grep '{keyword}' {log_file}",
+      "by_date": "grep '{date}' {log_file}"
+    }
+  },
+  "monitoring": {
+    "description": "System and addon monitoring",
+    "process": {
+      "check_running": {
+        "unix": "pgrep -f 'node.*server.js'",
+        "windows": "tasklist | findstr node.exe"
+      },
+      "memory_usage": {
+        "linux": "ps aux | grep 'node.*server.js' | awk '{print $4}'",
+        "macos": "ps aux | grep 'node.*server.js' | awk '{print $4}'",
+        "windows": "wmic process where \"name='node.exe'\" get WorkingSetSize"
+      },
+      "cpu_usage": {
+        "linux": "ps aux | grep 'node.*server.js' | awk '{print $3}'",
+        "macos": "ps aux | grep 'node.*server.js' | awk '{print $3}'"
+      },
+      "uptime": {
+        "linux": "ps -p $(pgrep -f 'node.*server.js') -o etime=",
+        "macos": "ps -p $(pgrep -f 'node.*server.js') -o etime="
+      }
+    },
+    "network": {
+      "connections": {
+        "linux": "sudo netstat -tnp | grep node",
+        "macos": "lsof -iTCP -sTCP:ESTABLISHED -n -P | grep node"
+      },
+      "requests_per_minute": "tail -n 1000 /var/log/nginx/access.log | grep -c $(date -d '1 minute ago' '+%d/%b/%Y:%H:%M')"
+    }
+  },
+  "cleanup": {
+    "description": "Cleanup and uninstallation",
+    "stop_services": {
+      "linux": "sudo systemctl stop stremio-addon && sudo systemctl disable stremio-addon",
+      "macos": "launchctl unload ~/Library/LaunchAgents/com.stremio.addon.plist",
+      "windows": "nssm stop StremioAddon && nssm remove StremioAddon confirm"
+    },
+    "remove_files": {
+      "addon": "rm -rf {addon_dir}",
+      "nginx_config": {
+        "linux": "sudo rm /etc/nginx/sites-available/stremio-addon && sudo rm /etc/nginx/sites-enabled/stremio-addon",
+        "macos": "rm /usr/local/etc/nginx/servers/stremio-addon.conf"
+      },
+      "service_file": {
+        "linux": "sudo rm /etc/systemd/system/stremio-addon.service && sudo systemctl daemon-reload",
+        "macos": "rm ~/Library/LaunchAgents/com.stremio.addon.plist"
+      },
+      "ssl_certs": "sudo certbot delete --cert-name {domain}",
+      "duckdns_script": "rm {script_path}",
+      "cron_jobs": "crontab -l | grep -v 'stremio' | crontab -"
+    },
+    "firewall": {
+      "remove_rules": {
+        "linux": "sudo ufw delete allow 80/tcp && sudo ufw delete allow 443/tcp",
+        "windows": "netsh advfirewall firewall delete rule name=\"Stremio Addon HTTP\" && netsh advfirewall firewall delete rule name=\"Stremio Addon HTTPS\""
+      }
+    }
+  },
+  "testing": {
+    "description": "Testing commands for verification",
+    "http": {
+      "test_endpoint": "curl -s -o /dev/null -w \"%{http_code}\" {url}",
+      "test_with_output": "curl -s {url}",
+      "test_headers": "curl -I {url}",
+      "test_ssl": "curl -vI https://{domain} 2>&1 | grep 'SSL certificate'"
+    },
+    "dns": {
+      "resolve": "nslookup {domain}",
+      "dig": "dig {domain}"
+    },
+    "port": {
+      "scan": "nmap -p {port} {host}",
+      "telnet": "telnet {host} {port}",
+      "nc": "nc -zv {host} {port}"
+    }
+  },
+  "troubleshooting": {
+    "description": "Diagnostic commands",
+    "check_port_conflict": {
+      "linux": "sudo lsof -i :{port}",
+      "macos": "lsof -i :{port}",
+      "windows": "netstat -ano | findstr :{port}"
+    },
+    "check_permissions": {
+      "unix": "ls -la {file}"
+    },
+    "check_selinux": {
+      "linux": "getenforce"
+    },
+    "check_disk_space": {
+      "unix": "df -h",
+      "windows": "wmic logicaldisk get size,freespace,caption"
+    },
+    "check_memory": {
+      "linux": "free -h",
+      "macos": "vm_stat",
+      "windows": "wmic OS get FreePhysicalMemory,TotalVisibleMemorySize /Value"
+    },
+    "check_dns_propagation": "curl -s https://dns.google/resolve?name={domain}.duckdns.org&type=A | grep -o '\"data\":\"[0-9.]*\"'",
+    "test_real_debrid": "curl -s -H 'Authorization: Bearer {token}' https://api.real-debrid.com/rest/1.0/user"
+  }
+}

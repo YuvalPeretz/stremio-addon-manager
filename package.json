@@ -1,0 +1,27 @@
+{
+  "name": "stremio-addon-manager",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "clean": "lerna clean",
+    "build": "lerna run build",
+    "build:core": "lerna run build --scope=@stremio-addon-manager/core",
+    "dev": "lerna run dev --parallel",
+    "dev:cli": "lerna run dev --scope=@stremio-addon-manager/cli",
+    "dev:electron": "lerna run dev --scope=@stremio-addon-manager/electron",
+    "test": "lerna run test",
+    "lint": "lerna run lint",
+    "type-check": "lerna run type-check"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0",
+    "eslint": "^8.56.0",
+    "lerna": "^8.0.0",
+    "typescript": "^5.3.3"
+  }
+}
