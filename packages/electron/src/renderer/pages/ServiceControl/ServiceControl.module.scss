@@ -1,0 +1,105 @@
+@import "../../styles/variables.scss";
+
+.serviceControl {
+  padding: $spacing-lg;
+  height: 100%;
+  overflow-y: auto;
+
+  :global {
+    .ant-card {
+      background: $bg-secondary;
+      border-color: $border-color;
+      border-radius: $border-radius-md;
+
+      .ant-card-head {
+        border-color: $border-color;
+        color: $text-primary;
+      }
+
+      .ant-card-body {
+        color: $text-secondary;
+      }
+    }
+
+    .ant-descriptions {
+      .ant-descriptions-item-label {
+        color: $text-secondary;
+        background: $bg-primary;
+      }
+
+      .ant-descriptions-item-content {
+        color: $text-primary;
+        background: $bg-secondary;
+      }
+
+      .ant-descriptions-row {
+        border-color: $border-color;
+      }
+    }
+
+    .ant-badge-status-text {
+      color: $text-primary;
+    }
+
+    .ant-alert {
+      background: rgba($primary-color, 0.1);
+      border-color: rgba($primary-color, 0.2);
+
+      &.ant-alert-error {
+        background: rgba($error-color, 0.1);
+        border-color: rgba($error-color, 0.2);
+      }
+
+      &.ant-alert-warning {
+        background: rgba($warning-color, 0.1);
+        border-color: rgba($warning-color, 0.2);
+      }
+
+      &.ant-alert-success {
+        background: rgba($success-color, 0.1);
+        border-color: rgba($success-color, 0.2);
+      }
+
+      .ant-alert-message {
+        color: $text-primary;
+      }
+
+      .ant-alert-description {
+        color: $text-secondary;
+      }
+    }
+  }
+}
+
+.iconSuccess {
+  font-size: 48px;
+  color: $success-color;
+}
+
+.iconWarning {
+  font-size: 48px;
+  color: $warning-color;
+}
+
+.iconError {
+  font-size: 48px;
+  color: $error-color;
+}
+
+.iconDefault {
+  font-size: 48px;
+  color: $text-secondary;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spinning {
+  animation: spin 1s linear infinite;
+}

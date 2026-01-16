@@ -3,14 +3,14 @@
  * Main overview page showing addon status and quick actions
  */
 
-import { useEffect } from 'react';
-import { useAtom } from 'jotai';
-import { Card, Flex, Typography, Button, Tag, Spin, Alert } from 'antd';
-import { FiPlay, FiPause, FiRotateCw, FiDownload, FiSettings } from 'react-icons/fi';
-import { useNavigate } from 'react-router-dom';
-import { configAtom, configExistsAtom } from '../../atoms/configAtoms';
-import { serviceStatusAtom, serviceLoadingAtom } from '../../atoms/serviceAtoms';
-import styles from './Dashboard.module.scss';
+import { useEffect } from "react";
+import { useAtom } from "jotai";
+import { Card, Flex, Typography, Button, Tag, Spin, Alert } from "antd";
+import { FiPlay, FiPause, FiRotateCw, FiDownload, FiSettings } from "react-icons/fi";
+import { useNavigate } from "react-router-dom";
+import { configAtom, configExistsAtom } from "../../atoms/configAtoms";
+import { serviceStatusAtom, serviceLoadingAtom } from "../../atoms/serviceAtoms";
+import styles from "./Dashboard.module.scss";
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -46,7 +46,7 @@ function Dashboard() {
     }
   }
 
-  async function handleServiceAction(action: 'start' | 'stop' | 'restart') {
+  async function handleServiceAction(action: "start" | "stop" | "restart") {
     setServiceLoading(true);
     await window.electron.service[action]();
     await loadServiceStatus();
@@ -54,14 +54,14 @@ function Dashboard() {
 
   function getStatusColor(status?: string) {
     switch (status) {
-      case 'active':
-        return 'success';
-      case 'inactive':
-        return 'default';
-      case 'failed':
-        return 'error';
+      case "active":
+        return "success";
+      case "inactive":
+        return "default";
+      case "failed":
+        return "error";
       default:
-        return 'default';
+        return "default";
     }
   }
 
@@ -75,12 +75,7 @@ function Dashboard() {
           type="info"
           showIcon
         />
-        <Button
-          type="primary"
-          size="large"
-          icon={<FiDownload />}
-          onClick={() => navigate('/installation')}
-        >
+        <Button type="primary" size="large" icon={<FiDownload />} onClick={() => navigate("/installation")}>
           Start Installation
         </Button>
       </Flex>
@@ -92,40 +87,44 @@ function Dashboard() {
       <Title level={2}>Dashboard</Title>
 
       {/* Service Status Card */}
-      <Card title="Service Status" extra={<Button icon={<FiRotateCw />} onClick={loadServiceStatus}>Refresh</Button>}>
+      <Card
+        title="Service Status"
+        extra={
+          <Button icon={<FiRotateCw />} onClick={loadServiceStatus}>
+            Refresh
+          </Button>
+        }
+      >
         <Spin spinning={serviceLoading}>
           <Flex vertical gap={16}>
             <Flex justify="space-between" align="center">
               <Text>Status</Text>
               <Tag color={getStatusColor(serviceStatus?.status)}>
-                {serviceStatus?.status?.toUpperCase() || 'UNKNOWN'}
+                {serviceStatus?.status?.toUpperCase() || "UNKNOWN"}
               </Tag>
             </Flex>
             <Flex justify="space-between" align="center">
               <Text>Auto-start</Text>
-              <Tag color={serviceStatus?.enabled ? 'success' : 'default'}>
-                {serviceStatus?.enabled ? 'ENABLED' : 'DISABLED'}
+              <Tag color={serviceStatus?.enabled ? "success" : "default"}>
+                {serviceStatus?.enabled ? "ENABLED" : "DISABLED"}
               </Tag>
             </Flex>
             <Flex gap={8}>
               <Button
                 icon={<FiPlay />}
-                onClick={() => handleServiceAction('start')}
-                disabled={serviceStatus?.status === 'active'}
+                onClick={() => handleServiceAction("start")}
+                disabled={serviceStatus?.status === "active"}
               >
                 Start
               </Button>
               <Button
                 icon={<FiPause />}
-                onClick={() => handleServiceAction('stop')}
-                disabled={serviceStatus?.status !== 'active'}
+                onClick={() => handleServiceAction("stop")}
+                disabled={serviceStatus?.status !== "active"}
               >
                 Stop
               </Button>
-              <Button
-                icon={<FiRotateCw />}
-                onClick={() => handleServiceAction('restart')}
-              >
+              <Button icon={<FiRotateCw />} onClick={() => handleServiceAction("restart")}>
                 Restart
               </Button>
             </Flex>
@@ -155,9 +154,7 @@ function Dashboard() {
             </Flex>
             <Flex justify="space-between">
               <Text strong>SSL Enabled</Text>
-              <Tag color={config.features.ssl ? 'success' : 'default'}>
-                {config.features.ssl ? 'YES' : 'NO'}
-              </Tag>
+              <Tag color={config.features.ssl ? "success" : "default"}>{config.features.ssl ? "YES" : "NO"}</Tag>
             </Flex>
           </Flex>
         </Card>
@@ -166,17 +163,15 @@ function Dashboard() {
       {/* Quick Actions Card */}
       <Card title="Quick Actions">
         <Flex gap={8}>
-          <Button icon={<FiSettings />} onClick={() => navigate('/configuration')}>
+          <Button icon={<FiSettings />} onClick={() => navigate("/configuration")}>
             Configuration
           </Button>
-          <Button onClick={() => navigate('/logs')}>
-            View Logs
-          </Button>
+          <Button onClick={() => navigate("/logs")}>View Logs</Button>
         </Flex>
       </Card>
 
       {/* Install URL */}
-      {config && serviceStatus?.status === 'active' && (
+      {config && serviceStatus?.status === "active" && (
         <Alert
           message="Addon URL"
           description={
@@ -196,4 +191,3 @@ function Dashboard() {
 }
 
 export default Dashboard;
-

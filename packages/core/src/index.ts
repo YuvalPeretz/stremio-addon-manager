@@ -49,3 +49,17 @@ export type {
   ProgressCallback,
 } from "./installation/index.js";
 export { InstallationStep, StepStatus } from "./installation/index.js";
+
+// Export Server module
+export { ServerDetector, ServerConnection, ConnectionProfileManager } from "./server/index.js";
+export type {
+  ServerInfo,
+  AddonManifest,
+  Catalog,
+  Extra,
+  ServerConnectionConfig,
+  ServerHealth,
+  ConnectionProfile,
+  ServerStats,
+  ServerDetectionResult,
+} from "./server/index.js";

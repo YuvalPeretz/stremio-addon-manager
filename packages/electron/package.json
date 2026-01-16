@@ -2,16 +2,23 @@
   "name": "@stremio-addon-manager/electron",
   "version": "1.0.0",
   "description": "Electron GUI for Stremio Addon Manager",
-  "main": "dist/main/index.js",
-  "type": "commonjs",
+  "main": "dist/src/main/index.js",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/src/main/index.d.ts",
+      "import": "./dist/src/main/index.js",
+      "default": "./dist/src/main/index.js"
+    }
+  },
   "scripts": {
-    "dev": "concurrently \"npm run dev:main\" \"npm run dev:renderer\"",
-    "dev:main": "tsc --build tsconfig.main.json --watch",
-    "dev:renderer": "vite",
-    "build": "npm run build:main && npm run build:renderer",
-    "build:main": "tsc --build tsconfig.main.json",
-    "build:renderer": "tsc --build tsconfig.renderer.json && vite build",
-    "start": "electron .",
+    "dev": "vite",
+    "dev:main": "tsc --build tsconfig.json tsconfig.preload.json --watch",
+    "dev:renderer": "vite --config vite.renderer.config.ts",
+    "build": "vite build",
+    "build:main": "tsc --build tsconfig.json && tsc --build tsconfig.preload.json && node --input-type=module -e \"import fs from 'fs'; const p='dist/src/main/preload.js'; if(fs.existsSync(p)){fs.renameSync(p, p.replace('.js', '.cjs')); console.log('Renamed preload.js to preload.cjs');}\"",
+    "build:renderer": "vite build --config vite.renderer.config.ts",
+    "start": "npm run build:main && electron .",
     "package": "electron-builder",
     "clean": "rimraf dist .tsbuildinfo"
   },

@@ -202,11 +202,13 @@ export class ServiceManager {
 
       let statusCommand: string;
       let enabledCommand: string;
+      let fullStatusCommand: string | undefined;
 
       switch (this.os) {
         case OperatingSystem.LINUX:
           statusCommand = `systemctl is-active ${this.serviceName}`;
           enabledCommand = `systemctl is-enabled ${this.serviceName}`;
+          fullStatusCommand = `systemctl status ${this.serviceName} --no-pager`;
           break;
         case OperatingSystem.MACOS:
           statusCommand = `launchctl list | grep ${this.serviceName}`;
@@ -226,10 +228,40 @@ export class ServiceManager {
       const status = this.parseStatus(statusResult.stdout, this.os);
       const enabled = this.parseEnabled(enabledResult.stdout, this.os);
 
-      return {
+      const serviceInfo: ServiceInfo = {
         status,
         enabled,
       };
+
+      // Get additional details for Linux
+      if (this.os === OperatingSystem.LINUX && fullStatusCommand) {
+        try {
+          const fullStatusResult = await this.executeSudoCommand(fullStatusCommand);
+          const details = this.parseSystemdStatus(fullStatusResult.stdout);
+          if (details.pid) serviceInfo.pid = details.pid;
+          if (details.cpu) serviceInfo.cpu = details.cpu;
+          if (details.uptime) serviceInfo.uptime = details.uptime;
+
+          // Get memory using ps command if PID is available
+          if (serviceInfo.pid) {
+            try {
+              const memoryCommand = `ps -p ${serviceInfo.pid} -o rss= | awk '{print $1/1024 "MB"}'`;
+              const memoryResult = await this.executeCommand(memoryCommand);
+              const memoryStr = memoryResult.stdout.trim();
+              if (memoryStr && memoryStr !== '') {
+                serviceInfo.memory = memoryStr;
+              }
+            } catch (error) {
+              logger.debug('Failed to get memory info', { error });
+            }
+          }
+        } catch (error) {
+          logger.debug('Failed to get detailed status', { error });
+          // Continue without details
+        }
+      }
+
+      return serviceInfo;
     } catch (error) {
       logger.error('Failed to get service status', { service: this.serviceName, error });
       return {
@@ -405,6 +437,33 @@ export class ServiceManager {
       default:
         return false;
     }
+  }
+
+  /**
+   * Parse systemd status output to extract PID, CPU, and uptime
+   */
+  private parseSystemdStatus(output: string): { pid?: number; cpu?: string; uptime?: string } {
+    const result: { pid?: number; cpu?: string; uptime?: string } = {};
+
+    // Extract PID from "Main PID: 12345"
+    const pidMatch = output.match(/Main PID:\s+(\d+)/);
+    if (pidMatch) {
+      result.pid = parseInt(pidMatch[1], 10);
+    }
+
+    // Extract CPU from "CPU: 1.234s" or "CPU: 1.234s / 2.345s"
+    const cpuMatch = output.match(/CPU:\s+([\d.]+s?)/i);
+    if (cpuMatch) {
+      result.cpu = cpuMatch[1];
+    }
+
+    // Extract uptime from "Active: active (running) since Mon 2024-01-01 12:00:00 UTC; 1h 30min ago"
+    const uptimeMatch = output.match(/Active:.*since\s+[^;]+;\s+(.+?)(?:\n|$)/);
+    if (uptimeMatch) {
+      result.uptime = uptimeMatch[1].trim();
+    }
+
+    return result;
   }
 }
 

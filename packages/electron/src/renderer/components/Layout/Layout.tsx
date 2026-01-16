@@ -11,6 +11,7 @@ import {
   FiSettings,
   FiPlay,
   FiFileText,
+  FiServer,
 } from 'react-icons/fi';
 import styles from './Layout.module.scss';
 
@@ -26,6 +27,11 @@ function Layout() {
       key: '/dashboard',
       icon: <FiHome size={18} />,
       label: 'Dashboard',
+    },
+    {
+      key: '/connect',
+      icon: <FiServer size={18} />,
+      label: 'Connect to Server',
     },
     {
       key: '/installation',

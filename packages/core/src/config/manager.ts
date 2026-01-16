@@ -209,8 +209,47 @@ export class ConfigManager {
       if (!configToValidate.addon.password) {
         errors.push("Addon password is required");
       }
-      if (configToValidate.addon.torrentLimit < 5 || configToValidate.addon.torrentLimit > 25) {
-        errors.push("Torrent limit must be between 5 and 25");
+      // Validate torrentLimit (type check and range)
+      if (typeof configToValidate.addon.torrentLimit !== "number" || isNaN(configToValidate.addon.torrentLimit)) {
+        errors.push("Torrent limit must be a valid number");
+      } else if (configToValidate.addon.torrentLimit < 1 || configToValidate.addon.torrentLimit > 50) {
+        errors.push("Torrent limit must be between 1 and 50");
+      }
+
+      // Validate availabilityCheckLimit (if provided) - type check and range
+      if (configToValidate.addon.availabilityCheckLimit !== undefined) {
+        if (
+          typeof configToValidate.addon.availabilityCheckLimit !== "number" ||
+          isNaN(configToValidate.addon.availabilityCheckLimit)
+        ) {
+          errors.push("Availability check limit must be a valid number");
+        } else if (
+          configToValidate.addon.availabilityCheckLimit < 5 ||
+          configToValidate.addon.availabilityCheckLimit > 50
+        ) {
+          errors.push("Availability check limit must be between 5 and 50");
+        }
+      }
+
+      // Validate maxStreams (if provided) - type check and range
+      if (configToValidate.addon.maxStreams !== undefined) {
+        if (typeof configToValidate.addon.maxStreams !== "number" || isNaN(configToValidate.addon.maxStreams)) {
+          errors.push("Max streams must be a valid number");
+        } else if (configToValidate.addon.maxStreams < 1 || configToValidate.addon.maxStreams > 20) {
+          errors.push("Max streams must be between 1 and 20");
+        }
+      }
+
+      // Validate maxConcurrency (if provided) - type check and range
+      if (configToValidate.addon.maxConcurrency !== undefined) {
+        if (
+          typeof configToValidate.addon.maxConcurrency !== "number" ||
+          isNaN(configToValidate.addon.maxConcurrency)
+        ) {
+          errors.push("Max concurrency must be a valid number");
+        } else if (configToValidate.addon.maxConcurrency < 1 || configToValidate.addon.maxConcurrency > 10) {
+          errors.push("Max concurrency must be between 1 and 10");
+        }
       }
     }
 

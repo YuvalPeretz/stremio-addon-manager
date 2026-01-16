@@ -1,0 +1,134 @@
+@import "../../styles/variables.scss";
+
+.connect {
+  padding: $spacing-lg;
+  height: 100%;
+  overflow-y: auto;
+
+  :global {
+    .ant-card {
+      background: $bg-secondary;
+      border-color: $border-color;
+      border-radius: $border-radius-md;
+
+      .ant-card-head {
+        border-color: $border-color;
+        color: $text-primary;
+      }
+
+      .ant-card-body {
+        color: $text-secondary;
+      }
+    }
+
+    .ant-form-item-label > label {
+      color: $text-primary;
+      font-weight: 500;
+    }
+
+    .ant-input,
+    .ant-input-number,
+    .ant-select-selector {
+      background: $bg-primary;
+      border-color: $border-color;
+      color: $text-primary;
+
+      &:hover {
+        border-color: $primary-color;
+      }
+
+      &:focus,
+      &:focus-within {
+        border-color: $primary-color;
+        box-shadow: 0 0 0 2px rgba($primary-color, 0.1);
+      }
+    }
+
+    .ant-radio-group {
+      .ant-radio-button-wrapper {
+        background: $bg-primary;
+        border-color: $border-color;
+        color: $text-primary;
+
+        &:hover {
+          color: $primary-color;
+        }
+
+        &.ant-radio-button-wrapper-checked {
+          background: $primary-color;
+          border-color: $primary-color;
+          color: white;
+        }
+      }
+    }
+
+    .ant-table {
+      background: transparent;
+
+      .ant-table-thead > tr > th {
+        background: $bg-primary;
+        color: $text-primary;
+        border-color: $border-color;
+      }
+
+      .ant-table-tbody > tr > td {
+        background: $bg-secondary;
+        border-color: $border-color;
+        color: $text-secondary;
+      }
+
+      .ant-table-tbody > tr:hover > td {
+        background: rgba($primary-color, 0.05);
+      }
+    }
+
+    .ant-tabs {
+      .ant-tabs-nav {
+        &::before {
+          border-color: $border-color;
+        }
+
+        .ant-tabs-tab {
+          color: $text-secondary;
+
+          &:hover {
+            color: $text-primary;
+          }
+
+          &.ant-tabs-tab-active {
+            .ant-tabs-tab-btn {
+              color: $primary-color;
+            }
+          }
+        }
+
+        .ant-tabs-ink-bar {
+          background: $primary-color;
+        }
+      }
+    }
+
+    .ant-alert {
+      background: rgba($primary-color, 0.1);
+      border-color: rgba($primary-color, 0.2);
+
+      &.ant-alert-error {
+        background: rgba($error-color, 0.1);
+        border-color: rgba($error-color, 0.2);
+      }
+
+      &.ant-alert-success {
+        background: rgba($success-color, 0.1);
+        border-color: rgba($success-color, 0.2);
+      }
+
+      .ant-alert-message {
+        color: $text-primary;
+      }
+
+      .ant-alert-description {
+        color: $text-secondary;
+      }
+    }
+  }
+}

@@ -1,0 +1,103 @@
+@import "../../styles/variables.scss";
+
+.configuration {
+  padding: $spacing-lg;
+  height: 100%;
+  overflow-y: auto;
+
+  :global {
+    .ant-card {
+      background: $bg-secondary;
+      border-color: $border-color;
+      border-radius: $border-radius-md;
+
+      .ant-card-head {
+        border-color: $border-color;
+        color: $text-primary;
+      }
+
+      .ant-card-body {
+        color: $text-secondary;
+      }
+    }
+
+    .ant-form-item {
+      margin-bottom: $spacing-lg;
+    }
+
+    .ant-form-item-label > label {
+      color: $text-primary;
+      font-weight: 500;
+    }
+
+    .ant-input,
+    .ant-input-number,
+    .ant-select-selector {
+      background: $bg-primary;
+      border-color: $border-color;
+      color: $text-primary;
+
+      &:hover {
+        border-color: $primary-color;
+      }
+
+      &:focus,
+      &:focus-within {
+        border-color: $primary-color;
+        box-shadow: 0 0 0 2px rgba($primary-color, 0.1);
+      }
+    }
+
+    .ant-input-disabled,
+    .ant-input-number-disabled {
+      background: $bg-secondary;
+      color: $text-secondary;
+      cursor: not-allowed;
+    }
+
+    .ant-switch {
+      &.ant-switch-checked {
+        background-color: $success-color;
+      }
+    }
+
+    .ant-tabs {
+      .ant-tabs-nav {
+        &::before {
+          border-color: $border-color;
+        }
+
+        .ant-tabs-tab {
+          color: $text-secondary;
+
+          &:hover {
+            color: $text-primary;
+          }
+
+          &.ant-tabs-tab-active {
+            .ant-tabs-tab-btn {
+              color: $primary-color;
+            }
+          }
+        }
+
+        .ant-tabs-ink-bar {
+          background: $primary-color;
+        }
+      }
+
+      .ant-tabs-content {
+        padding-top: $spacing-md;
+      }
+    }
+
+    .ant-divider {
+      border-color: $border-color;
+    }
+
+    .ant-form-item-extra {
+      color: $text-tertiary;
+      font-size: $font-size-sm;
+    }
+  }
+}

@@ -8,23 +8,33 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./os": {
       "types": "./dist/os/index.d.ts",
-      "import": "./dist/os/index.js"
+      "import": "./dist/os/index.js",
+      "require": "./dist/os/index.js",
+      "default": "./dist/os/index.js"
     },
     "./ssh": {
       "types": "./dist/ssh/index.d.ts",
-      "import": "./dist/ssh/index.js"
+      "import": "./dist/ssh/index.js",
+      "require": "./dist/ssh/index.js",
+      "default": "./dist/ssh/index.js"
     },
     "./service": {
       "types": "./dist/service/index.d.ts",
-      "import": "./dist/service/index.js"
+      "import": "./dist/service/index.js",
+      "require": "./dist/service/index.js",
+      "default": "./dist/service/index.js"
     },
     "./config": {
       "types": "./dist/config/index.d.ts",
-      "import": "./dist/config/index.js"
+      "import": "./dist/config/index.js",
+      "require": "./dist/config/index.js",
+      "default": "./dist/config/index.js"
     }
   },
   "scripts": {

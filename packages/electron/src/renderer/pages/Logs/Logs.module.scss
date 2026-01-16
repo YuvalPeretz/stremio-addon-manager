@@ -1,0 +1,130 @@
+@import "../../styles/variables.scss";
+
+.logs {
+  padding: $spacing-lg;
+  height: 100%;
+  overflow-y: auto;
+
+  :global {
+    .ant-card {
+      background: $bg-secondary;
+      border-color: $border-color;
+      border-radius: $border-radius-md;
+
+      .ant-card-head {
+        border-color: $border-color;
+        color: $text-primary;
+      }
+
+      .ant-card-body {
+        color: $text-secondary;
+      }
+    }
+
+    .ant-input-affix-wrapper {
+      background: $bg-primary;
+      border-color: $border-color;
+
+      &:hover {
+        border-color: $primary-color;
+      }
+
+      &:focus,
+      &:focus-within {
+        border-color: $primary-color;
+        box-shadow: 0 0 0 2px rgba($primary-color, 0.1);
+      }
+
+      .ant-input {
+        background: transparent;
+        color: $text-primary;
+      }
+
+      .ant-input-prefix {
+        color: $text-secondary;
+      }
+    }
+
+    .ant-select-selector {
+      background: $bg-primary;
+      border-color: $border-color;
+      color: $text-primary;
+
+      &:hover {
+        border-color: $primary-color;
+      }
+    }
+
+    .ant-tag {
+      border: none;
+    }
+  }
+}
+
+.logsContainer {
+  background: $bg-primary;
+  border: 1px solid $border-color;
+  border-radius: $border-radius-sm;
+  padding: $spacing-md;
+  max-height: 600px;
+  overflow-y: auto;
+  font-family: "Courier New", monospace;
+  font-size: $font-size-sm;
+}
+
+.emptyLogs {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+}
+
+.logsList {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-xs;
+}
+
+.logEntry {
+  padding: $spacing-xs $spacing-sm;
+  border-left: 3px solid transparent;
+  border-radius: $border-radius-sm;
+  transition: background $transition-fast;
+
+  &:hover {
+    background: rgba($primary-color, 0.05);
+  }
+}
+
+.logLevel {
+  min-width: 60px;
+  text-align: center;
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.logTimestamp {
+  min-width: 180px;
+  font-size: $font-size-sm;
+  font-family: "Courier New", monospace;
+}
+
+.logMessage {
+  flex: 1;
+  word-break: break-word;
+  color: $text-primary;
+  font-family: "Courier New", monospace;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spinning {
+  animation: spin 1s linear infinite;
+}

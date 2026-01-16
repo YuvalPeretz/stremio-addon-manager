@@ -32,6 +32,8 @@ export async function statusCommand(_options: StatusOptions): Promise<void> {
         host: config.installation.target.host || '',
         port: config.installation.target.port || 22,
         username: config.installation.target.username || '',
+        password: config.installation.target.password,
+        privateKeyPath: config.installation.target.privateKeyPath,
       });
       await ssh.connect();
     }

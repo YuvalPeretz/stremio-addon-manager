@@ -2,34 +2,34 @@
  * Configuration Module Types
  */
 
-import type { OperatingSystem, LinuxDistribution } from '../types/common.js';
+import type { OperatingSystem, LinuxDistribution } from "../types/common.js";
 
 /**
  * Access method for the addon
  */
 export enum AccessMethod {
-  CUSTOM_DOMAIN = 'custom_domain',
-  DUCKDNS = 'duckdns',
-  STATIC_IP_WITH_DOMAIN = 'static_ip_domain',
-  LOCAL_NETWORK = 'local_network',
+  CUSTOM_DOMAIN = "custom_domain",
+  DUCKDNS = "duckdns",
+  STATIC_IP_WITH_DOMAIN = "static_ip_domain",
+  LOCAL_NETWORK = "local_network",
 }
 
 /**
  * Installation type
  */
 export enum InstallationType {
-  LOCAL = 'local',
-  REMOTE = 'remote',
+  LOCAL = "local",
+  REMOTE = "remote",
 }
 
 /**
  * Provider type
  */
 export enum Provider {
-  REAL_DEBRID = 'real-debrid',
-  ALL_DEBRID = 'alldebrid',
-  PREMIUMIZE = 'premiumize',
-  TORBOX = 'torbox',
+  REAL_DEBRID = "real-debrid",
+  ALL_DEBRID = "alldebrid",
+  PREMIUMIZE = "premiumize",
+  TORBOX = "torbox",
 }
 
 /**
@@ -39,6 +39,8 @@ export interface TargetConfig {
   host?: string;
   port?: number;
   username?: string;
+  password?: string;
+  privateKeyPath?: string;
   os?: OperatingSystem;
   distro?: LinuxDistribution;
 }
@@ -54,6 +56,24 @@ export interface AddonConfig {
   provider: Provider;
   torrentLimit: number;
   port?: number;
+  /**
+   * Number of torrents to check for instant availability in Real-Debrid cache.
+   * Higher values = more API calls but better chance of finding cached torrents.
+   * Recommended range: 5-50, default: 15
+   */
+  availabilityCheckLimit?: number;
+  /**
+   * Maximum number of streams to return before stopping processing (early return optimization).
+   * Higher values = more processing time but more options for users.
+   * Recommended range: 1-20, default: 5
+   */
+  maxStreams?: number;
+  /**
+   * Number of torrents to process in parallel simultaneously.
+   * Higher values = faster processing but more load on Real-Debrid API.
+   * Recommended range: 1-10, default: 3
+   */
+  maxConcurrency?: number;
 }
 
 /**
@@ -75,7 +95,7 @@ export interface FeatureConfig {
   authentication: boolean;
   backups: {
     enabled: boolean;
-    frequency: 'daily' | 'weekly' | 'monthly';
+    frequency: "daily" | "weekly" | "monthly";
     retention: number;
   };
   ssl: boolean;
@@ -129,13 +149,16 @@ export interface AddonManagerConfig {
  */
 export const DEFAULT_CONFIG: Partial<AddonManagerConfig> = {
   addon: {
-    name: 'My_Private_Addon',
-    version: '1.0.0',
-    domain: '',
-    password: '',
+    name: "My_Private_Addon",
+    version: "1.0.0",
+    domain: "",
+    password: "",
     provider: Provider.REAL_DEBRID,
     torrentLimit: 15,
     port: 7000,
+    availabilityCheckLimit: 15,
+    maxStreams: 5,
+    maxConcurrency: 3,
   },
   features: {
     firewall: true,
@@ -153,7 +176,7 @@ export const DEFAULT_CONFIG: Partial<AddonManagerConfig> = {
     authentication: true,
     backups: {
       enabled: true,
-      frequency: 'weekly',
+      frequency: "weekly",
       retention: 7,
     },
     ssl: true,
@@ -161,4 +184,3 @@ export const DEFAULT_CONFIG: Partial<AddonManagerConfig> = {
     autoStart: true,
   },
 };
-

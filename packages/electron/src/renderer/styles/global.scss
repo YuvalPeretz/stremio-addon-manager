@@ -1,8 +1,7 @@
 /**
  * Global Styles
  */
-
-@import './variables.scss';
+@import "./variables.scss";
 
 * {
   margin: 0;
@@ -51,4 +50,3 @@ body {
   background: $primary-color;
   color: white;
 }
-
