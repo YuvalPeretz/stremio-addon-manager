@@ -266,10 +266,10 @@ function setupIPC() {
     }
   });
 
-  // Config Management
-  ipcMain.handle("config:load", async () => {
+  // Config Management (with addonId support)
+  ipcMain.handle("config:load", async (_event, addonId?: string) => {
     try {
-      const configManager = new ConfigManager();
+      const configManager = new ConfigManager(addonId);
       const config = await configManager.load();
       return { success: true, data: config };
     } catch (error) {
@@ -278,20 +278,27 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle("config:save", async (_event, config) => {
-    try {
-      const configManager = new ConfigManager();
-      await configManager.save(config);
-      return { success: true };
-    } catch (error) {
-      logger.error("Config save failed", error);
-      return { success: false, error: (error as Error).message };
+  ipcMain.handle(
+    "config:save",
+    async (_event, config, addonId?: string, options?: { syncServiceFile?: boolean; restartService?: boolean }) => {
+      try {
+        const configManager = new ConfigManager(addonId);
+        const result = await configManager.save(config, options);
+        return {
+          success: true,
+          serviceFileSynced: result.serviceFileSynced,
+          serviceFileChanges: result.serviceFileChanges,
+        };
+      } catch (error) {
+        logger.error("Config save failed", error);
+        return { success: false, error: (error as Error).message };
+      }
     }
-  });
+  );
 
-  ipcMain.handle("config:get", async (_event, key: string) => {
+  ipcMain.handle("config:get", async (_event, key: string, addonId?: string) => {
     try {
-      const configManager = new ConfigManager();
+      const configManager = new ConfigManager(addonId);
       await configManager.load();
       const value = configManager.getNestedValue(key);
       return { success: true, data: value };
@@ -301,9 +308,9 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle("config:set", async (_event, key: string, value: unknown) => {
+  ipcMain.handle("config:set", async (_event, key: string, value: unknown, addonId?: string) => {
     try {
-      const configManager = new ConfigManager();
+      const configManager = new ConfigManager(addonId);
       await configManager.load();
       configManager.setNestedValue(key, value);
       await configManager.save();
@@ -314,13 +321,161 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle("config:exists", async () => {
+  ipcMain.handle("config:exists", async (_event, addonId?: string) => {
     try {
-      const configManager = new ConfigManager();
+      const configManager = new ConfigManager(addonId);
       const exists = await configManager.exists();
       return { success: true, data: exists };
     } catch (error) {
       logger.error("Config exists check failed", error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
+  // Migration
+  ipcMain.handle("migration:check", async () => {
+    try {
+      const { legacyConfigExists } = await import("@stremio-addon-manager/core");
+      const exists = await legacyConfigExists();
+      return { success: true, data: exists };
+    } catch (error) {
+      logger.error("Migration check failed", error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
+  ipcMain.handle("migration:migrate", async () => {
+    try {
+      const { migrateLegacyConfig } = await import("@stremio-addon-manager/core");
+      const result = await migrateLegacyConfig();
+      return { success: result.success, data: result.addonId, error: result.error };
+    } catch (error) {
+      logger.error("Migration failed", error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
+  // Addon Management
+  ipcMain.handle("addon:list", async () => {
+    try {
+      const { AddonRegistryManager } = await import("@stremio-addon-manager/core");
+      const registryManager = new AddonRegistryManager();
+      await registryManager.initialize();
+      const addons = await registryManager.listAddons();
+      return { success: true, data: addons };
+    } catch (error) {
+      logger.error("Addon list failed", error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
+  ipcMain.handle("addon:get", async (_event, addonId: string) => {
+    try {
+      const { AddonRegistryManager } = await import("@stremio-addon-manager/core");
+      const registryManager = new AddonRegistryManager();
+      await registryManager.initialize();
+      const addon = await registryManager.getAddon(addonId);
+      return { success: true, data: addon };
+    } catch (error) {
+      logger.error("Addon get failed", error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
+  ipcMain.handle("addon:getDefault", async () => {
+    try {
+      const { AddonRegistryManager } = await import("@stremio-addon-manager/core");
+      const registryManager = new AddonRegistryManager();
+      await registryManager.initialize();
+      const defaultAddon = await registryManager.getDefaultAddon();
+      return { success: true, data: defaultAddon };
+    } catch (error) {
+      logger.error("Get default addon failed", error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
+  ipcMain.handle("addon:setDefault", async (_event, addonId: string) => {
+    try {
+      const { AddonRegistryManager } = await import("@stremio-addon-manager/core");
+      const registryManager = new AddonRegistryManager();
+      await registryManager.initialize();
+      await registryManager.setDefaultAddon(addonId);
+      return { success: true };
+    } catch (error) {
+      logger.error("Set default addon failed", error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
+  ipcMain.handle("addon:create", async (_event, name: string, port: number, domain: string) => {
+    try {
+      const { AddonRegistryManager, ConfigManager, generateServiceName } = await import("@stremio-addon-manager/core");
+      const registryManager = new AddonRegistryManager();
+      await registryManager.initialize();
+
+      // Check name availability
+      if (!(await registryManager.isNameAvailable(name))) {
+        return { success: false, error: `Addon name '${name}' is already in use` };
+      }
+
+      // Check port availability
+      if (!(await registryManager.isPortAvailable(port))) {
+        return { success: false, error: `Port ${port} is already in use` };
+      }
+
+      // Check domain availability
+      if (!(await registryManager.isDomainAvailable(domain))) {
+        return { success: false, error: `Domain '${domain}' is already in use` };
+      }
+
+      // Generate addon ID
+      const addonId = name
+        .toLowerCase()
+        .trim()
+        .replace(/[^\w\s-]/g, "")
+        .replace(/[\s_-]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+
+      // Ensure unique ID
+      let finalAddonId = addonId;
+      let counter = 1;
+      const registry = registryManager.getRegistry();
+      await registry.load();
+      while (registry.exists(finalAddonId)) {
+        finalAddonId = `${addonId}-${counter}`;
+        counter++;
+      }
+
+      // Create config
+      const configManager = new ConfigManager(finalAddonId);
+      const config = configManager.reset();
+      config.addonId = finalAddonId;
+      config.serviceName = generateServiceName(finalAddonId);
+      config.addon.name = name;
+      config.addon.port = port;
+      config.addon.domain = domain;
+      await configManager.save();
+
+      // Register in registry
+      const addon = await registryManager.createAddon(name, port, domain, configManager.getConfigPath());
+
+      return { success: true, data: addon };
+    } catch (error) {
+      logger.error("Addon create failed", error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
+  ipcMain.handle("addon:delete", async (_event, addonId: string) => {
+    try {
+      const { AddonRegistryManager } = await import("@stremio-addon-manager/core");
+      const registryManager = new AddonRegistryManager();
+      await registryManager.initialize();
+      const deleted = await registryManager.deleteAddon(addonId);
+      return { success: deleted };
+    } catch (error) {
+      logger.error("Addon delete failed", error);
       return { success: false, error: (error as Error).message };
     }
   });
@@ -365,14 +520,15 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle("service:start", async (_event, ssh) => {
+  ipcMain.handle("service:start", async (_event, ssh, addonId?: string) => {
     try {
       const sshConnection = ssh ? new SSHManager(ssh) : undefined;
       if (sshConnection) {
         await sshConnection.connect();
       }
 
-      const serviceManager = new ServiceManager("stremio-addon", sshConnection);
+      const serviceName = await getServiceName(addonId);
+      const serviceManager = new ServiceManager(serviceName, sshConnection);
       await serviceManager.start();
 
       if (sshConnection) {
@@ -386,14 +542,15 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle("service:stop", async (_event, ssh) => {
+  ipcMain.handle("service:stop", async (_event, ssh, addonId?: string) => {
     try {
       const sshConnection = ssh ? new SSHManager(ssh) : undefined;
       if (sshConnection) {
         await sshConnection.connect();
       }
 
-      const serviceManager = new ServiceManager("stremio-addon", sshConnection);
+      const serviceName = await getServiceName(addonId);
+      const serviceManager = new ServiceManager(serviceName, sshConnection);
       await serviceManager.stop();
 
       if (sshConnection) {
@@ -407,14 +564,15 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle("service:restart", async (_event, ssh) => {
+  ipcMain.handle("service:restart", async (_event, ssh, addonId?: string) => {
     try {
       const sshConnection = ssh ? new SSHManager(ssh) : undefined;
       if (sshConnection) {
         await sshConnection.connect();
       }
 
-      const serviceManager = new ServiceManager("stremio-addon", sshConnection);
+      const serviceName = await getServiceName(addonId);
+      const serviceManager = new ServiceManager(serviceName, sshConnection);
       await serviceManager.restart();
 
       if (sshConnection) {
@@ -428,14 +586,248 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle("service:logs", async (_event, lines: number, ssh) => {
+  // Environment Variable Management
+  ipcMain.handle("env:list", async (_event, ssh, addonId?: string) => {
     try {
       const sshConnection = ssh ? new SSHManager(ssh) : undefined;
       if (sshConnection) {
         await sshConnection.connect();
       }
 
-      const serviceManager = new ServiceManager("stremio-addon", sshConnection);
+      const serviceName = await getServiceName(addonId);
+      const serviceManager = new ServiceManager(serviceName, sshConnection);
+      const envVars = await serviceManager.getEnvironmentVariables();
+
+      if (sshConnection) {
+        await sshConnection.disconnect();
+      }
+
+      return { success: true, data: envVars };
+    } catch (error) {
+      logger.error("Env list failed", error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
+  ipcMain.handle("env:get", async (_event, key: string, ssh, addonId?: string) => {
+    try {
+      const sshConnection = ssh ? new SSHManager(ssh) : undefined;
+      if (sshConnection) {
+        await sshConnection.connect();
+      }
+
+      const serviceName = await getServiceName(addonId);
+      const serviceManager = new ServiceManager(serviceName, sshConnection);
+      const envVars = await serviceManager.getEnvironmentVariables();
+      const value = envVars[key];
+
+      if (sshConnection) {
+        await sshConnection.disconnect();
+      }
+
+      return { success: true, data: { key, value } };
+    } catch (error) {
+      logger.error("Env get failed", error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
+  ipcMain.handle("env:set", async (_event, key: string, value: string, ssh, addonId?: string) => {
+    try {
+      const sshConnection = ssh ? new SSHManager(ssh) : undefined;
+      if (sshConnection) {
+        await sshConnection.connect();
+      }
+
+      const serviceName = await getServiceName(addonId);
+      const serviceManager = new ServiceManager(serviceName, sshConnection);
+      const currentEnvVars = await serviceManager.getEnvironmentVariables();
+      currentEnvVars[key] = value;
+      await serviceManager.setEnvironmentVariables(currentEnvVars);
+
+      if (sshConnection) {
+        await sshConnection.disconnect();
+      }
+
+      // Update config override
+      const configManager = new ConfigManager(addonId);
+      const config = await configManager.load();
+      if (!config.addon.environmentVariables) {
+        config.addon.environmentVariables = {};
+      }
+      config.addon.environmentVariables[key] = value;
+      await configManager.save(config);
+
+      return { success: true };
+    } catch (error) {
+      logger.error("Env set failed", error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
+  ipcMain.handle("env:unset", async (_event, key: string, ssh, addonId?: string) => {
+    try {
+      const sshConnection = ssh ? new SSHManager(ssh) : undefined;
+      if (sshConnection) {
+        await sshConnection.connect();
+      }
+
+      const serviceName = await getServiceName(addonId);
+      const serviceManager = new ServiceManager(serviceName, sshConnection);
+      const currentEnvVars = await serviceManager.getEnvironmentVariables();
+      delete currentEnvVars[key];
+      await serviceManager.setEnvironmentVariables(currentEnvVars);
+
+      if (sshConnection) {
+        await sshConnection.disconnect();
+      }
+
+      // Remove override from config
+      const configManager = new ConfigManager(addonId);
+      const config = await configManager.load();
+      if (config.addon.environmentVariables) {
+        config.addon.environmentVariables[key] = null;
+        await configManager.save(config);
+      }
+
+      return { success: true };
+    } catch (error) {
+      logger.error("Env unset failed", error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
+  ipcMain.handle("env:reset", async (_event, ssh, addonId?: string) => {
+    try {
+      const sshConnection = ssh ? new SSHManager(ssh) : undefined;
+      if (sshConnection) {
+        await sshConnection.connect();
+      }
+
+      const serviceName = await getServiceName(addonId);
+      const serviceManager = new ServiceManager(serviceName, sshConnection);
+      await serviceManager.resetEnvironmentVariables();
+
+      if (sshConnection) {
+        await sshConnection.disconnect();
+      }
+
+      // Clear all overrides in config
+      const configManager = new ConfigManager(addonId);
+      const config = await configManager.load();
+      config.addon.environmentVariables = {};
+      await configManager.save(config);
+
+      return { success: true };
+    } catch (error) {
+      logger.error("Env reset failed", error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
+  ipcMain.handle("env:sync", async (_event, ssh, addonId?: string, restartService?: boolean) => {
+    try {
+      const sshConnection = ssh ? new SSHManager(ssh) : undefined;
+      if (sshConnection) {
+        await sshConnection.connect();
+      }
+
+      const configManager = new ConfigManager(addonId);
+      const config = await configManager.load();
+      const serviceName = await getServiceName(addonId);
+      const serviceManager = new ServiceManager(serviceName, sshConnection);
+      const result = await serviceManager.syncServiceFile(config, { restartService });
+
+      if (sshConnection) {
+        await sshConnection.disconnect();
+      }
+
+      return { success: true, data: result };
+    } catch (error) {
+      logger.error("Env sync failed", error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
+  ipcMain.handle("env:generate", async (_event, key: string, ssh, addonId?: string) => {
+    try {
+      const { EnvVarManager } = await import("@stremio-addon-manager/core");
+      const generatedValue = EnvVarManager.generateEnvVarValue(key);
+      if (!generatedValue) {
+        return { success: false, error: `Cannot generate value for ${key}` };
+      }
+
+      const sshConnection = ssh ? new SSHManager(ssh) : undefined;
+      if (sshConnection) {
+        await sshConnection.connect();
+      }
+
+      const serviceName = await getServiceName(addonId);
+      const serviceManager = new ServiceManager(serviceName, sshConnection);
+      const currentEnvVars = await serviceManager.getEnvironmentVariables();
+      currentEnvVars[key] = generatedValue;
+      await serviceManager.setEnvironmentVariables(currentEnvVars);
+
+      if (sshConnection) {
+        await sshConnection.disconnect();
+      }
+
+      // Save as override in config
+      const configManager = new ConfigManager(addonId);
+      const config = await configManager.load();
+      if (!config.addon.environmentVariables) {
+        config.addon.environmentVariables = {};
+      }
+      config.addon.environmentVariables[key] = generatedValue;
+      await configManager.save(config);
+
+      return { success: true, data: { key, value: generatedValue } };
+    } catch (error) {
+      logger.error("Env generate failed", error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
+  ipcMain.handle("env:getMetadata", async () => {
+    try {
+      const { EnvVarManager } = await import("@stremio-addon-manager/core");
+      const metadata = EnvVarManager.getAllEnvVarMetadata();
+      const defaults = EnvVarManager.getDefaultEnvVars();
+      return { success: true, data: { metadata, defaults } };
+    } catch (error) {
+      logger.error("Env getMetadata failed", error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
+  // Service Management (with addonId support)
+  // Helper function to get service name from addonId or config
+  async function getServiceName(addonId?: string): Promise<string> {
+    if (addonId) {
+      const { getServiceNameFromAddonId } = await import("@stremio-addon-manager/core");
+      return getServiceNameFromAddonId(addonId);
+    }
+    try {
+      const configManager = new ConfigManager();
+      const config = await configManager.load();
+      if (config.serviceName) {
+        return config.serviceName;
+      }
+    } catch {
+      // Use default
+    }
+    return "stremio-addon";
+  }
+
+  ipcMain.handle("service:logs", async (_event, lines: number, ssh, addonId?: string) => {
+    try {
+      const sshConnection = ssh ? new SSHManager(ssh) : undefined;
+      if (sshConnection) {
+        await sshConnection.connect();
+      }
+
+      const serviceName = await getServiceName(addonId);
+      const serviceManager = new ServiceManager(serviceName, sshConnection);
       const logs = await serviceManager.logs(lines);
 
       if (sshConnection) {
@@ -449,14 +841,15 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle("service:getLogs", async (_event, lines: number = 100, ssh) => {
+  ipcMain.handle("service:getLogs", async (_event, lines: number = 100, ssh, addonId?: string) => {
     try {
       const sshConnection = ssh ? new SSHManager(ssh) : undefined;
       if (sshConnection) {
         await sshConnection.connect();
       }
 
-      const serviceManager = new ServiceManager("stremio-addon", sshConnection);
+      const serviceName = await getServiceName(addonId);
+      const serviceManager = new ServiceManager(serviceName, sshConnection);
       const logs = await serviceManager.logs(lines);
 
       if (sshConnection) {
@@ -496,14 +889,15 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle("service:enableAutoStart", async (_event, ssh) => {
+  ipcMain.handle("service:enableAutoStart", async (_event, ssh, addonId?: string) => {
     try {
       const sshConnection = ssh ? new SSHManager(ssh) : undefined;
       if (sshConnection) {
         await sshConnection.connect();
       }
 
-      const serviceManager = new ServiceManager("stremio-addon", sshConnection);
+      const serviceName = await getServiceName(addonId);
+      const serviceManager = new ServiceManager(serviceName, sshConnection);
       await serviceManager.enable();
 
       if (sshConnection) {
@@ -517,14 +911,15 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle("service:disableAutoStart", async (_event, ssh) => {
+  ipcMain.handle("service:disableAutoStart", async (_event, ssh, addonId?: string) => {
     try {
       const sshConnection = ssh ? new SSHManager(ssh) : undefined;
       if (sshConnection) {
         await sshConnection.connect();
       }
 
-      const serviceManager = new ServiceManager("stremio-addon", sshConnection);
+      const serviceName = await getServiceName(addonId);
+      const serviceManager = new ServiceManager(serviceName, sshConnection);
       await serviceManager.disable();
 
       if (sshConnection) {

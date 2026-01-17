@@ -23,23 +23,26 @@ import {
 } from "antd";
 import { FiSave, FiRotateCw, FiDownload, FiUpload } from "react-icons/fi";
 import { configAtom } from "../../atoms/configAtoms";
+import { selectedAddonIdAtom } from "../../atoms/addonAtoms";
+import EnvironmentVariables from "../EnvironmentVariables/EnvironmentVariables";
 import styles from "./Configuration.module.scss";
 
 const { Title, Text } = Typography;
 
 function Configuration() {
   const [config, setConfig] = useAtom(configAtom);
+  const [selectedAddonId] = useAtom(selectedAddonIdAtom);
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
 
   useEffect(() => {
     loadConfiguration();
-  }, []);
+  }, [selectedAddonId]);
 
   async function loadConfiguration() {
     setLoading(true);
-    const result = await window.electron.config.load();
+    const result = await window.electron.config.load(selectedAddonId || undefined);
     setLoading(false);
 
     if (result.success) {
@@ -57,7 +60,7 @@ function Configuration() {
       const values = form.getFieldsValue();
 
       setLoading(true);
-      const result = await window.electron.config.save(values);
+      const result = await window.electron.config.save(values, selectedAddonId || undefined);
       setLoading(false);
 
       if (result.success) {
@@ -322,6 +325,11 @@ function Configuration() {
         </Card>
       ),
     },
+    {
+      key: "environment",
+      label: "Environment Variables",
+      children: <EnvironmentVariables />,
+    },
   ];
 
   if (!config) {
@@ -338,7 +346,14 @@ function Configuration() {
   return (
     <Flex vertical gap={24} className={styles.configuration}>
       <Flex justify="space-between" align="center">
-        <Title level={2}>Configuration</Title>
+        <Title level={2}>
+          Configuration
+          {selectedAddonId && (
+            <Text type="secondary" style={{ fontSize: "14px", fontWeight: "normal", marginLeft: 12 }}>
+              ({selectedAddonId})
+            </Text>
+          )}
+        </Title>
         <Space>
           <Button icon={<FiUpload />} onClick={handleImport}>
             Import

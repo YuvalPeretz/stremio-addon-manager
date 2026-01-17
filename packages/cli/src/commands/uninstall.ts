@@ -8,12 +8,15 @@ import inquirer from 'inquirer';
 import ora from 'ora';
 import {
   logger,
-  ConfigManager,
   ServiceManager,
   SSHManager,
+  AddonRegistryManager,
+  getServiceNameFromAddonId,
 } from '@stremio-addon-manager/core';
+import { resolveAddonId, getAddonMetadata, getConfigManagerForAddon } from '../utils/addon-resolver.js';
 
 interface UninstallOptions {
+  addon?: string;
   remote?: boolean;
   keepConfig?: boolean;
   keepBackups?: boolean;
@@ -24,7 +27,21 @@ interface UninstallOptions {
  */
 export async function uninstallCommand(options: UninstallOptions): Promise<void> {
   try {
-    const configManager = new ConfigManager();
+    // Resolve addon ID (required for multi-addon)
+    const resolvedAddonId = await resolveAddonId(options.addon);
+    if (!resolvedAddonId) {
+      console.log(chalk.red('\n❌ Addon ID is required. Use --addon <id> to specify which addon to uninstall.\n'));
+      console.log(chalk.yellow('Use "stremio-addon-manager list" to see all installed addons.\n'));
+      process.exit(1);
+    }
+
+    const addon = await getAddonMetadata(resolvedAddonId);
+    if (!addon) {
+      console.log(chalk.red(`\n❌ Addon '${resolvedAddonId}' not found.\n`));
+      process.exit(1);
+    }
+
+    const configManager = getConfigManagerForAddon(resolvedAddonId);
     const config = await configManager.load();
 
     // Confirm uninstallation
@@ -32,7 +49,9 @@ export async function uninstallCommand(options: UninstallOptions): Promise<void>
       {
         type: 'confirm',
         name: 'confirm',
-        message: chalk.red('Are you sure you want to uninstall the addon? This action cannot be undone.'),
+        message: chalk.red(
+          `Are you sure you want to uninstall addon '${addon.name}' (${resolvedAddonId})? This action cannot be undone.`
+        ),
         default: false,
       },
     ]);
@@ -58,7 +77,8 @@ export async function uninstallCommand(options: UninstallOptions): Promise<void>
     // Stop service
     const stopSpinner = ora('Stopping service...').start();
     try {
-      const serviceManager = new ServiceManager('stremio-addon', ssh);
+      const serviceName = config.serviceName || getServiceNameFromAddonId(resolvedAddonId);
+      const serviceManager = new ServiceManager(serviceName, ssh);
       await serviceManager.stop();
       await serviceManager.disable();
       stopSpinner.succeed(chalk.green('Service stopped and disabled'));
@@ -73,7 +93,8 @@ export async function uninstallCommand(options: UninstallOptions): Promise<void>
         await ssh.execCommand(`rm -rf ${config.paths.addonDirectory}`);
         await ssh.execSudo(`rm -f ${config.paths.serviceFile}`);
         await ssh.execSudo(`rm -f ${config.paths.nginxConfig}`);
-        
+        await ssh.execSudo(`rm -f /etc/nginx/sites-enabled/${config.serviceName || getServiceNameFromAddonId(resolvedAddonId)}`);
+
         if (!options.keepBackups) {
           await ssh.execSudo(`rm -rf ${config.paths.backups}`);
         }
@@ -87,13 +108,18 @@ export async function uninstallCommand(options: UninstallOptions): Promise<void>
       logger.error('File removal error', error);
     }
 
+    // Remove from registry
+    const registryManager = new AddonRegistryManager();
+    await registryManager.initialize();
+    await registryManager.deleteAddon(resolvedAddonId);
+
     // Remove configuration
     if (!options.keepConfig) {
       await configManager.delete();
       console.log(chalk.green('✅ Configuration removed'));
     }
 
-    console.log(chalk.green('\n✅ Addon uninstalled successfully!\n'));
+    console.log(chalk.green(`\n✅ Addon '${addon.name}' uninstalled successfully!\n`));
 
     if (ssh) {
       await ssh.disconnect();

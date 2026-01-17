@@ -10,6 +10,9 @@ import yaml from "js-yaml";
 import { logger } from "../utils/logger.js";
 import type { AddonManagerConfig } from "./types.js";
 import { DEFAULT_CONFIG, InstallationType, AccessMethod } from "./types.js";
+import { generateServiceName } from "./registry-manager.js";
+import { autoMigrateIfNeeded, legacyConfigExists } from "./migration.js";
+import { ServiceManager } from "../service/manager.js";
 
 /**
  * Configuration Manager class
@@ -17,15 +20,24 @@ import { DEFAULT_CONFIG, InstallationType, AccessMethod } from "./types.js";
 export class ConfigManager {
   private config: AddonManagerConfig | null = null;
   private configPath: string;
+  private addonId?: string;
 
   /**
    * Create a new ConfigManager instance
-   * @param configPath Path to configuration file (default: ~/.stremio-addon-manager/config.yaml)
+   * @param addonId Optional addon ID for addon-specific config
+   * @param configPath Optional path to configuration file (overrides addonId-based path)
    */
-  constructor(configPath?: string) {
+  constructor(addonId?: string, configPath?: string) {
+    this.addonId = addonId;
+
     if (configPath) {
       this.configPath = configPath;
+    } else if (addonId) {
+      // Addon-specific config path
+      const homeDir = os.homedir();
+      this.configPath = path.join(homeDir, ".stremio-addon-manager", "addons", addonId, "config.yaml");
     } else {
+      // Legacy config path (backward compatibility)
       const homeDir = os.homedir();
       this.configPath = path.join(homeDir, ".stremio-addon-manager", "config.yaml");
     }
@@ -39,7 +51,56 @@ export class ConfigManager {
   }
 
   /**
+   * Get the addon ID (if set)
+   */
+  public getAddonId(): string | undefined {
+    return this.addonId;
+  }
+
+  /**
+   * Get config path for a specific addon ID
+   */
+  public static getConfigPathForAddon(addonId: string): string {
+    const homeDir = os.homedir();
+    return path.join(homeDir, ".stremio-addon-manager", "addons", addonId, "config.yaml");
+  }
+
+  /**
+   * List all addon config paths
+   */
+  public static async listAddonConfigs(): Promise<string[]> {
+    const homeDir = os.homedir();
+    const addonsDir = path.join(homeDir, ".stremio-addon-manager", "addons");
+
+    try {
+      const entries = await fs.readdir(addonsDir, { withFileTypes: true });
+      const configPaths: string[] = [];
+
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const configPath = path.join(addonsDir, entry.name, "config.yaml");
+          try {
+            await fs.access(configPath);
+            configPaths.push(configPath);
+          } catch {
+            // Config file doesn't exist, skip
+          }
+        }
+      }
+
+      return configPaths;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Load configuration from file
+   * If addonId is set, ensures addonId and serviceName are set in config
+   * If no addonId is provided and legacy config exists, auto-migrates to new system
    */
   public async load(): Promise<AddonManagerConfig> {
     try {
@@ -49,12 +110,42 @@ export class ConfigManager {
       // Merge with defaults
       this.config = this.mergeWithDefaults(loadedConfig);
 
-      logger.info("Configuration loaded successfully", { path: this.configPath });
+      // Set addonId and serviceName if addonId was provided in constructor
+      if (this.addonId) {
+        this.config.addonId = this.addonId;
+        if (!this.config.serviceName) {
+          this.config.serviceName = generateServiceName(this.addonId);
+        }
+      }
+
+      logger.info("Configuration loaded successfully", { path: this.configPath, addonId: this.addonId });
       return this.config;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        // Config file not found
+        // If no addonId provided (legacy mode) and legacy config exists, try to migrate
+        if (!this.addonId && (await legacyConfigExists())) {
+          logger.info("Legacy config detected, attempting auto-migration");
+          const migratedAddonId = await autoMigrateIfNeeded();
+          if (migratedAddonId) {
+            // Migration successful, reload with migrated addon ID
+            logger.info("Migration successful, loading migrated config", { addonId: migratedAddonId });
+            this.addonId = migratedAddonId;
+            this.configPath = ConfigManager.getConfigPathForAddon(migratedAddonId);
+            // Recursively call load() to load the migrated config
+            return await this.load();
+          }
+        }
+
         logger.warn("Configuration file not found, using defaults", { path: this.configPath });
         this.config = this.mergeWithDefaults({});
+
+        // Set addonId and serviceName if addonId was provided in constructor
+        if (this.addonId) {
+          this.config.addonId = this.addonId;
+          this.config.serviceName = generateServiceName(this.addonId);
+        }
+
         return this.config;
       }
 
@@ -65,8 +156,16 @@ export class ConfigManager {
 
   /**
    * Save configuration to file
+   * @param config Optional configuration to save (uses current config if not provided)
+   * @param options Optional save options
+   * @param options.syncServiceFile If true, sync the service file with the saved config
+   * @param options.restartService If true, restart the service after syncing (only if syncServiceFile is true)
+   * @returns Information about what was updated (service file sync results)
    */
-  public async save(config?: AddonManagerConfig): Promise<void> {
+  public async save(
+    config?: AddonManagerConfig,
+    options?: { syncServiceFile?: boolean; restartService?: boolean }
+  ): Promise<{ serviceFileSynced?: boolean; serviceFileChanges?: string[] }> {
     const configToSave = config || this.config;
 
     if (!configToSave) {
@@ -90,6 +189,68 @@ export class ConfigManager {
 
       this.config = configToSave;
       logger.info("Configuration saved successfully", { path: this.configPath });
+
+      // Optionally sync service file
+      let serviceFileSynced = false;
+      let serviceFileChanges: string[] | undefined;
+
+      if (options?.syncServiceFile) {
+        try {
+          // Edge case: Handle missing serviceName or addonId
+          if (!configToSave.serviceName && !this.addonId) {
+            logger.warn("Cannot sync service file: no service name or addon ID available");
+          } else {
+            // Get service name from config
+            const serviceName =
+              configToSave.serviceName || (this.addonId ? generateServiceName(this.addonId) : "stremio-addon");
+
+            // Edge case: Verify service exists before syncing
+            try {
+              const serviceManager = new ServiceManager(serviceName);
+
+              // Try to get service status to verify it exists
+              await serviceManager.status();
+
+              // Sync service file
+              const syncResult = await serviceManager.syncServiceFile(configToSave, {
+                restartService: options.restartService,
+              });
+
+              serviceFileSynced = syncResult.updated;
+              serviceFileChanges = syncResult.changes;
+
+              if (syncResult.updated) {
+                logger.info("Service file synced with configuration", {
+                  service: serviceName,
+                  changes: syncResult.changes?.length || 0,
+                });
+              } else {
+                logger.info("Service file is already up to date", { service: serviceName });
+              }
+            } catch (serviceError) {
+              const errorMsg = (serviceError as Error).message;
+              // Edge case: Service doesn't exist - that's okay, config is saved
+              if (errorMsg.includes("does not exist") || errorMsg.includes("ENOENT") || errorMsg.includes("not found")) {
+                logger.info("Service does not exist yet, config saved but service file not synced", {
+                  service: serviceName,
+                });
+              } else {
+                // Re-throw other service errors
+                throw serviceError;
+              }
+            }
+          }
+        } catch (error) {
+          logger.warn("Failed to sync service file after config save", error);
+          // Don't throw - config save succeeded, service file sync is optional
+          // Edge case: Config save succeeded but service sync failed - this is acceptable
+        }
+      }
+
+      return {
+        serviceFileSynced,
+        serviceFileChanges,
+      };
     } catch (error) {
       logger.error("Failed to save configuration", error);
       throw new Error(`Failed to save configuration: ${(error as Error).message}`);
@@ -242,10 +403,7 @@ export class ConfigManager {
 
       // Validate maxConcurrency (if provided) - type check and range
       if (configToValidate.addon.maxConcurrency !== undefined) {
-        if (
-          typeof configToValidate.addon.maxConcurrency !== "number" ||
-          isNaN(configToValidate.addon.maxConcurrency)
-        ) {
+        if (typeof configToValidate.addon.maxConcurrency !== "number" || isNaN(configToValidate.addon.maxConcurrency)) {
           errors.push("Max concurrency must be a valid number");
         } else if (configToValidate.addon.maxConcurrency < 1 || configToValidate.addon.maxConcurrency > 10) {
           errors.push("Max concurrency must be between 1 and 10");
@@ -332,13 +490,42 @@ export class ConfigManager {
         },
       },
       paths: loaded.paths || {
-        addonDirectory: "",
-        nginxConfig: "",
-        serviceFile: "",
-        logs: "",
-        backups: "",
+        addonDirectory: this.addonId ? this.generateAddonPath("addonDirectory") : "",
+        nginxConfig: this.addonId ? this.generateAddonPath("nginxConfig") : "",
+        serviceFile: this.addonId ? this.generateAddonPath("serviceFile") : "",
+        logs: this.addonId ? this.generateAddonPath("logs") : "",
+        backups: this.addonId ? this.generateAddonPath("backups") : "",
       },
       secrets: loaded.secrets || {},
     };
+  }
+
+  /**
+   * Generate addon-specific path
+   */
+  private generateAddonPath(type: "addonDirectory" | "nginxConfig" | "serviceFile" | "logs" | "backups"): string {
+    if (!this.addonId) {
+      return "";
+    }
+
+    const serviceName = generateServiceName(this.addonId);
+
+    switch (type) {
+      case "addonDirectory":
+        // Use /opt for system-wide or ~/ for user-specific
+        return `/opt/stremio-addon-${this.addonId}`;
+      case "nginxConfig":
+        return `/etc/nginx/sites-available/stremio-addon-${this.addonId}`;
+      case "serviceFile":
+        return `/etc/systemd/system/${serviceName}.service`;
+      case "logs":
+        const homeDir = os.homedir();
+        return path.join(homeDir, ".stremio-addon-manager", "addons", this.addonId, "logs");
+      case "backups":
+        const homeDir2 = os.homedir();
+        return path.join(homeDir2, ".stremio-addon-manager", "addons", this.addonId, "backups");
+      default:
+        return "";
+    }
   }
 }

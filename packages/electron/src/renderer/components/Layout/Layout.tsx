@@ -12,7 +12,9 @@ import {
   FiPlay,
   FiFileText,
   FiServer,
+  FiGrid,
 } from 'react-icons/fi';
+import AddonSelector from '../AddonSelector/AddonSelector';
 import styles from './Layout.module.scss';
 
 const { Header, Sider, Content } = AntLayout;
@@ -27,6 +29,11 @@ function Layout() {
       key: '/dashboard',
       icon: <FiHome size={18} />,
       label: 'Dashboard',
+    },
+    {
+      key: '/addons',
+      icon: <FiGrid size={18} />,
+      label: 'Addon Management',
     },
     {
       key: '/connect',
@@ -62,10 +69,11 @@ function Layout() {
   return (
     <AntLayout className={styles.layout}>
       <Header className={styles.header}>
-        <Flex align="center" gap={12}>
+        <Flex align="center" justify="space-between" style={{ width: '100%' }}>
           <Title level={4} style={{ margin: 0, color: 'white' }}>
             🎬 Stremio Addon Manager
           </Title>
+          <AddonSelector />
         </Flex>
       </Header>
       <AntLayout>

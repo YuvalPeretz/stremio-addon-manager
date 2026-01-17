@@ -12,6 +12,8 @@ import Configuration from "./pages/Configuration/Configuration";
 import ServiceControl from "./pages/ServiceControl/ServiceControl";
 import Logs from "./pages/Logs/Logs";
 import Connect from "./pages/Connect/Connect";
+import AddonManagement from "./pages/AddonManagement/AddonManagement";
+import EnvironmentVariables from "./pages/EnvironmentVariables/EnvironmentVariables";
 
 function App() {
   return (
@@ -52,7 +54,9 @@ function App() {
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="connect" element={<Connect />} />
             <Route path="installation" element={<Installation />} />
+            <Route path="addons" element={<AddonManagement />} />
             <Route path="configuration" element={<Configuration />} />
+            <Route path="environment-variables" element={<EnvironmentVariables />} />
             <Route path="service" element={<ServiceControl />} />
             <Route path="logs" element={<Logs />} />
           </Route>

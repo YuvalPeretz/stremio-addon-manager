@@ -3,13 +3,14 @@
  * Main overview page showing addon status and quick actions
  */
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useAtom } from "jotai";
-import { Card, Flex, Typography, Button, Tag, Spin, Alert } from "antd";
+import { Card, Flex, Typography, Button, Tag, Spin, Alert, Modal, message } from "antd";
 import { FiPlay, FiPause, FiRotateCw, FiDownload, FiSettings } from "react-icons/fi";
 import { useNavigate } from "react-router-dom";
 import { configAtom, configExistsAtom } from "../../atoms/configAtoms";
 import { serviceStatusAtom, serviceLoadingAtom } from "../../atoms/serviceAtoms";
+import { selectedAddonIdAtom, selectedAddonAtom } from "../../atoms/addonAtoms";
 import styles from "./Dashboard.module.scss";
 
 const { Title, Text, Paragraph } = Typography;
@@ -20,26 +21,65 @@ function Dashboard() {
   const [configExists, setConfigExists] = useAtom(configExistsAtom);
   const [serviceStatus, setServiceStatus] = useAtom(serviceStatusAtom);
   const [serviceLoading, setServiceLoading] = useAtom(serviceLoadingAtom);
+  const [selectedAddonId] = useAtom(selectedAddonIdAtom);
+  const [selectedAddon] = useAtom(selectedAddonAtom);
+
+  const [migrationModalVisible, setMigrationModalVisible] = useState(false);
 
   useEffect(() => {
+    checkMigration();
     loadConfig();
     loadServiceStatus();
-  }, []);
+  }, [selectedAddonId]);
+
+  async function checkMigration() {
+    try {
+      const result = await window.electron.migration.check();
+      if (result.success && result.data) {
+        // Legacy config exists, show migration prompt
+        setMigrationModalVisible(true);
+      }
+    } catch (error) {
+      console.error("Failed to check migration", error);
+    }
+  }
+
+  async function handleMigrate() {
+    try {
+      const result = await window.electron.migration.migrate();
+      if (result.success) {
+        message.success(`Migration completed! Addon ID: ${result.data}`);
+        setMigrationModalVisible(false);
+        // Re-check migration status to ensure modal doesn't show again
+        await checkMigration();
+        // Reload addons and config
+        window.location.reload();
+      } else {
+        message.error(result.error || "Migration failed");
+      }
+    } catch (error) {
+      message.error("Migration failed");
+      console.error(error);
+    }
+  }
 
   async function loadConfig() {
-    const result = await window.electron.config.exists();
+    const result = await window.electron.config.exists(selectedAddonId || undefined);
     if (result.success && result.data) {
       setConfigExists(true);
-      const configResult = await window.electron.config.load();
+      const configResult = await window.electron.config.load(selectedAddonId || undefined);
       if (configResult.success) {
         setConfig(configResult.data as any);
       }
+    } else {
+      setConfigExists(false);
+      setConfig(null);
     }
   }
 
   async function loadServiceStatus() {
     setServiceLoading(true);
-    const result = await window.electron.service.status();
+    const result = await window.electron.service.status(undefined, selectedAddonId || undefined);
     setServiceLoading(false);
     if (result.success) {
       setServiceStatus(result.data as any);
@@ -48,7 +88,7 @@ function Dashboard() {
 
   async function handleServiceAction(action: "start" | "stop" | "restart") {
     setServiceLoading(true);
-    await window.electron.service[action]();
+    await window.electron.service[action](undefined, selectedAddonId || undefined);
     await loadServiceStatus();
   }
 
@@ -84,7 +124,14 @@ function Dashboard() {
 
   return (
     <Flex vertical gap={24} className={styles.dashboard}>
-      <Title level={2}>Dashboard</Title>
+      <Flex justify="space-between" align="center">
+        <Title level={2}>Dashboard</Title>
+        {selectedAddon && (
+          <Tag color="blue">
+            {selectedAddon.name} ({selectedAddon.id})
+          </Tag>
+        )}
+      </Flex>
 
       {/* Service Status Card */}
       <Card
@@ -186,6 +233,45 @@ function Dashboard() {
           showIcon
         />
       )}
+
+      {/* Migration Modal */}
+      <Modal
+        title="Legacy Configuration Detected"
+        open={migrationModalVisible}
+        onOk={handleMigrate}
+        onCancel={() => setMigrationModalVisible(false)}
+        okText="Migrate Now"
+        cancelText="Later"
+        width={600}
+      >
+        <Alert
+          message="Migration Required"
+          description={
+            <div>
+              <p>
+                A legacy configuration file was detected. To use the new multi-addon features, we need to migrate your
+                existing configuration.
+              </p>
+              <p style={{ marginTop: 12 }}>
+                <strong>What will be migrated:</strong>
+              </p>
+              <ul>
+                <li>Configuration file moved to addon-specific location</li>
+                <li>Addon registered in the new registry system</li>
+                <li>Service name updated (if service exists)</li>
+                <li>Paths updated to be addon-specific</li>
+                <li>Legacy config backed up</li>
+              </ul>
+              <p style={{ marginTop: 12, color: "#faad14" }}>
+                <strong>Note:</strong> This process is safe and your original config will be backed up.
+              </p>
+            </div>
+          }
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+        />
+      </Modal>
     </Flex>
   );
 }

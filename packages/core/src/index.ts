@@ -18,12 +18,17 @@ export type { SSHConfig, SSHExecResult, SSHConnection } from "./ssh/index.js";
 export { SSHEvent } from "./ssh/index.js";
 
 // Export Service module
-export { ServiceManager } from "./service/index.js";
+export { ServiceManager, getServiceNameFromAddonId } from "./service/index.js";
 export type { ServiceInfo, ServiceConfig } from "./service/index.js";
 export { ServiceStatus } from "./service/index.js";
 
 // Export Config module
-export { ConfigManager } from "./config/index.js";
+export { ConfigManager, AddonRegistry, AddonRegistryManager, generateServiceName, EnvVarManager } from "./config/index.js";
+export {
+  migrateLegacyConfig,
+  autoMigrateIfNeeded,
+  legacyConfigExists,
+} from "./config/index.js";
 export type {
   AddonManagerConfig,
   AddonConfig,
@@ -32,6 +37,8 @@ export type {
   PathsConfig,
   SecretsConfig,
   TargetConfig,
+  AddonMetadata,
+  AddonRegistryData,
 } from "./config/index.js";
 export { AccessMethod, InstallationType, Provider, DEFAULT_CONFIG } from "./config/index.js";
 

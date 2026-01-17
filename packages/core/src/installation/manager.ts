@@ -10,6 +10,8 @@ import { OSDetector } from '../os/detector.js';
 import { SSHManager } from '../ssh/manager.js';
 import { ServiceManager } from '../service/manager.js';
 import { OperatingSystem, LinuxDistribution } from '../types/common.js';
+import { AddonRegistryManager, generateServiceName, ConfigManager, EnvVarManager } from '../config/index.js';
+import { ServiceFileManager } from '../service/file-manager.js';
 import type {
   InstallationOptions,
   InstallationResult,
@@ -46,9 +48,15 @@ export class InstallationManager {
     logger.info('Starting addon installation', {
       type: this.options.config.installation.type,
       domain: this.options.config.addon.domain,
+      addonId: this.options.config.addonId,
     });
 
     try {
+      // Step 0: Check for conflicts (port, domain, name) - only if addonId is set
+      if (this.options.config.addonId) {
+        await this.checkConflicts();
+      }
+
       // Step 1: Connect (if remote)
       await this.executeStep(InstallationStep.CONNECT, async () => {
         if (this.options.config.installation.type === 'remote') {
@@ -149,7 +157,12 @@ export class InstallationManager {
         await this.verifyInstallation();
       });
 
-      // Step 16: Cleanup
+      // Step 16: Register addon in registry (if addonId is set)
+      if (this.options.config.addonId) {
+        await this.registerAddon();
+      }
+
+      // Step 17: Cleanup
       await this.executeStep(InstallationStep.CLEANUP, async () => {
         await this.cleanup();
       });
@@ -162,11 +175,12 @@ export class InstallationManager {
       const addonUrl = `${protocol}://${this.options.config.addon.domain}`;
       const installManifestUrl = `${addonUrl}/${this.options.config.addon.password}/manifest.json`;
 
-      logger.info('Installation completed successfully', { duration, addonUrl });
+      logger.info('Installation completed successfully', { duration, addonUrl, addonId: this.options.config.addonId });
 
       return {
         success: true,
         config: this.options.config,
+        addonId: this.options.config.addonId,
         addonUrl,
         installManifestUrl,
         steps: this.steps,
@@ -259,6 +273,84 @@ export class InstallationManager {
     const stepOrder = Object.values(InstallationStep);
     const currentIndex = stepOrder.indexOf(step);
     return Math.round((currentIndex / stepOrder.length) * 100);
+  }
+
+  /**
+   * Check for conflicts (port, domain, name) before installation
+   */
+  private async checkConflicts(): Promise<void> {
+    if (!this.options.config.addonId) {
+      return; // Skip if no addonId (legacy mode)
+    }
+
+    logger.info('Checking for conflicts', { addonId: this.options.config.addonId });
+
+    const registryManager = new AddonRegistryManager();
+    await registryManager.initialize();
+
+    const addonName = this.options.config.addon.name;
+    const port = this.options.config.addon.port || 7000;
+    const domain = this.options.config.addon.domain;
+    const serviceName = this.getServiceName();
+
+    // Check name availability
+    if (!(await registryManager.isNameAvailable(addonName, this.options.config.addonId))) {
+      const existingAddon = registryManager.getRegistry().getByName(addonName);
+      const suggestion = existingAddon
+        ? `Try a different name like '${addonName} 2' or '${addonName}-backup'`
+        : `Try a different name`;
+      throw new Error(
+        `Addon name '${addonName}' is already in use by addon '${existingAddon?.id || "unknown"}'. ${suggestion}`
+      );
+    }
+
+    // Check port availability
+    if (!(await registryManager.isPortAvailable(port, this.options.config.addonId))) {
+      const existingAddon = registryManager.getRegistry().list().find((a) => a.port === port);
+      const availablePort = await registryManager.findAvailablePort(port + 1, 10).catch(() => port + 1);
+      throw new Error(
+        `Port ${port} is already in use by addon '${existingAddon?.name || existingAddon?.id || "unknown"}'. ` +
+          `Suggested alternative: ${availablePort}`
+      );
+    }
+
+    // Check domain availability
+    if (domain && !(await registryManager.isDomainAvailable(domain, this.options.config.addonId))) {
+      const existingAddon = registryManager.getRegistry().list().find((a) => a.domain === domain);
+      throw new Error(
+        `Domain '${domain}' is already in use by addon '${existingAddon?.name || existingAddon?.id || "unknown"}'. ` +
+          `Each addon must have a unique domain. If you're using the same domain, consider using subdomains or different ports.`
+      );
+    }
+
+    // Check service name conflicts (service exists but not in registry)
+    const { OSDetector } = await import('../os/index.js');
+    const systemInfo = OSDetector.detect();
+    if (systemInfo.os === 'linux') {
+      try {
+        const { exec } = await import('node:child_process');
+        const { promisify } = await import('node:util');
+        const execAsync = promisify(exec);
+        const { stdout } = await execAsync(`systemctl list-units --type=service --no-legend ${serviceName}.service`);
+        if (stdout.trim()) {
+          // Service exists - check if it's in registry
+          const allAddons = await registryManager.listAddons();
+          const serviceInRegistry = allAddons.some((a) => a.serviceName === serviceName);
+          if (!serviceInRegistry) {
+            logger.warn(
+              `Service '${serviceName}' exists but is not registered in addon registry. ` +
+                `This may be an orphaned service from a previous installation.`
+            );
+            // Don't throw - allow installation to proceed, but warn
+          }
+        }
+      } catch (error) {
+        // Service doesn't exist or error checking - that's fine
+        logger.debug('Service conflict check completed', { serviceName, error });
+      }
+    }
+
+    logger.info('No conflicts detected', { addonId: this.options.config.addonId });
   }
 
   /**
@@ -607,8 +699,10 @@ server {
     const configPath = this.options.config.paths.nginxConfig;
     await this.execSudo(`echo '${nginxConfig}' > ${configPath}`);
 
-    // Create symbolic link
-    await this.execSudo(`ln -sf ${configPath} /etc/nginx/sites-enabled/stremio-addon`);
+    // Create symbolic link with addon-specific name
+    const serviceName = this.getServiceName();
+    const symlinkName = serviceName; // Use service name for nginx symlink
+    await this.execSudo(`ln -sf ${configPath} /etc/nginx/sites-enabled/${symlinkName}`);
 
     // Test Nginx configuration
     const testResult = await this.execSudo('nginx -t');
@@ -650,10 +744,13 @@ server {
 
     const targetDir = this.options.config.paths.addonDirectory;
     const port = this.options.config.addon.port || 7000;
+    const addonName = this.options.config.addon.name;
+    const serviceName = this.getServiceName();
 
+    const domain = this.options.config.addon.domain;
     const serviceConfig = `
 [Unit]
-Description=Stremio Private Addon
+Description=Stremio Private Addon: ${addonName}
 After=network.target
 
 [Service]
@@ -667,7 +764,11 @@ Environment=NODE_ENV=production
 Environment=PORT=${port}
 Environment=RD_API_TOKEN=${this.options.config.secrets.realDebridToken || ''}
 Environment=ADDON_PASSWORD=${this.options.config.addon.password}
+Environment=ADDON_DOMAIN=${domain}
 Environment=TORRENT_LIMIT=${this.options.config.addon.torrentLimit}
+${this.options.config.addon.availabilityCheckLimit ? `Environment=AVAILABILITY_CHECK_LIMIT=${this.options.config.addon.availabilityCheckLimit}` : ''}
+${this.options.config.addon.maxStreams ? `Environment=MAX_STREAMS=${this.options.config.addon.maxStreams}` : ''}
+${this.options.config.addon.maxConcurrency ? `Environment=MAX_CONCURRENCY=${this.options.config.addon.maxConcurrency}` : ''}
 
 [Install]
 WantedBy=multi-user.target
@@ -682,10 +783,10 @@ WantedBy=multi-user.target
 
     // Enable service
     if (this.options.config.features.autoStart) {
-      await this.execSudo('systemctl enable stremio-addon');
+      await this.execSudo(`systemctl enable ${serviceName}`);
     }
 
-    logger.info('Systemd service created');
+    logger.info('Systemd service created', { serviceName });
   }
 
   /**
@@ -694,7 +795,8 @@ WantedBy=multi-user.target
   private async startService(): Promise<void> {
     logger.info('Starting addon service');
 
-    const serviceManager = new ServiceManager('stremio-addon', this.ssh);
+    const serviceName = this.getServiceName();
+    const serviceManager = new ServiceManager(serviceName, this.ssh);
     await serviceManager.start();
 
     // Wait a moment for service to start
@@ -703,10 +805,10 @@ WantedBy=multi-user.target
     // Check if service is running
     const status = await serviceManager.status();
     if (status.status !== 'active') {
-      throw new Error('Service failed to start');
+      throw new Error(`Service '${serviceName}' failed to start`);
     }
 
-    logger.info('Addon service started');
+    logger.info('Addon service started', { serviceName });
   }
 
   /**
@@ -764,11 +866,12 @@ echo url="https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}
     logger.info('Verifying installation');
 
     // Check if service is running
-    const serviceManager = new ServiceManager('stremio-addon', this.ssh);
+    const serviceName = this.getServiceName();
+    const serviceManager = new ServiceManager(serviceName, this.ssh);
     const status = await serviceManager.status();
 
     if (status.status !== 'active') {
-      throw new Error('Service is not running');
+      throw new Error(`Service '${serviceName}' is not running`);
     }
 
     // Check if Nginx is serving the addon
@@ -781,19 +884,227 @@ echo url="https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}
       logger.warn('Addon may not be accessible', { output: curlResult.stdout });
     }
 
-    logger.info('Installation verified');
+    logger.info('Installation verified', { serviceName });
   }
 
   /**
    * Cleanup temporary files
    */
   private async cleanup(): Promise<void> {
-    logger.info('Cleaning up');
+    logger.info('Cleaning up after installation failure');
 
-    // Remove any temporary files
-    await this.execCommand('rm -f /tmp/stremio-addon-*');
+    try {
+      // Remove any temporary files
+      const serviceName = this.getServiceName();
+      await this.execCommand(`rm -f /tmp/${serviceName}-*`);
+
+      // If addonId is set, try to clean up partial installation
+      if (this.options.config.addonId) {
+        // Remove from registry if it was registered
+        try {
+          const registryManager = new AddonRegistryManager();
+          await registryManager.initialize();
+          if (await registryManager.getAddon(this.options.config.addonId)) {
+            await registryManager.deleteAddon(this.options.config.addonId);
+            logger.info('Removed addon from registry after failed installation', {
+              addonId: this.options.config.addonId,
+            });
+          }
+        } catch (error) {
+          logger.warn('Failed to remove addon from registry during cleanup', error);
+        }
+
+        // Try to remove config file if it was created
+        try {
+          const configManager = new ConfigManager(this.options.config.addonId);
+          if (await configManager.exists()) {
+            await configManager.delete();
+            logger.info('Removed config file after failed installation', {
+              addonId: this.options.config.addonId,
+            });
+          }
+        } catch (error) {
+          logger.warn('Failed to remove config file during cleanup', error);
+        }
+
+        // Try to stop and remove service if it was created
+        try {
+          const serviceManager = new ServiceManager(serviceName, this.ssh);
+          const status = await serviceManager.status();
+          const { ServiceStatus } = await import('../service/types.js');
+          if (status.status === ServiceStatus.ACTIVE) {
+            await serviceManager.stop();
+            await serviceManager.disable();
+            logger.info('Stopped and disabled service after failed installation', { serviceName });
+          }
+
+          // Try to remove service file
+          if (this.options.config.paths.serviceFile) {
+            await this.execSudo(`rm -f ${this.options.config.paths.serviceFile}`);
+            await this.execSudo('systemctl daemon-reload');
+            logger.info('Removed service file after failed installation', {
+              serviceFile: this.options.config.paths.serviceFile,
+            });
+          }
+        } catch (error) {
+          logger.warn('Failed to clean up service during cleanup', error);
+        }
+
+        // Try to remove addon directory if it was created but installation failed
+        // Only remove if it's empty or contains only minimal files
+        try {
+          if (this.options.config.paths.addonDirectory) {
+            // Check if directory exists and is mostly empty (just cloned, not fully installed)
+            const dirExists = await this.execCommand(`test -d ${this.options.config.paths.addonDirectory}`);
+            if (dirExists.code === 0) {
+              // Only remove if it looks like a failed installation (no server.js or minimal files)
+              const hasServerJs = await this.execCommand(
+                `test -f ${this.options.config.paths.addonDirectory}/server.js`
+              );
+              if (hasServerJs.code !== 0) {
+                // No server.js, likely a failed installation
+                await this.execSudo(`rm -rf ${this.options.config.paths.addonDirectory}`);
+                logger.info('Removed addon directory after failed installation', {
+                  directory: this.options.config.paths.addonDirectory,
+                });
+              }
+            }
+          }
+        } catch (error) {
+          logger.warn('Failed to clean up addon directory during cleanup', error);
+        }
+      }
+    } catch (error) {
+      logger.error('Error during cleanup', error);
+      // Don't throw - cleanup errors shouldn't prevent error reporting
+    }
 
     logger.info('Cleanup complete');
+  }
+
+  /**
+   * Register addon in registry after successful installation
+   */
+  private async registerAddon(): Promise<void> {
+    if (!this.options.config.addonId) {
+      return; // Skip if no addonId (legacy mode)
+    }
+
+    logger.info('Registering addon in registry', { addonId: this.options.config.addonId });
+
+    try {
+      const registryManager = new AddonRegistryManager();
+      await registryManager.initialize();
+
+      const addonName = this.options.config.addon.name;
+      const port = this.options.config.addon.port || 7000;
+      const domain = this.options.config.addon.domain;
+      const configPath = this.options.config.addonId
+        ? ConfigManager.getConfigPathForAddon(this.options.config.addonId)
+        : '';
+
+      // Create addon in registry
+      await registryManager.createAddon(addonName, port, domain, configPath);
+
+      // Set as default addon if it's the first one
+      const allAddons = await registryManager.listAddons();
+      if (allAddons.length === 1) {
+        await registryManager.setDefaultAddon(this.options.config.addonId);
+        logger.info('Set as default addon', { addonId: this.options.config.addonId });
+      }
+
+      logger.info('Addon registered successfully', { addonId: this.options.config.addonId });
+    } catch (error) {
+      logger.error('Failed to register addon in registry', error);
+      // Don't throw - registration failure shouldn't fail the installation
+      // The addon is already installed and working
+    }
+  }
+
+  /**
+   * Get service name from config or generate from addonId
+   */
+  private getServiceName(): string {
+    if (this.options.config.serviceName) {
+      return this.options.config.serviceName;
+    }
+    if (this.options.config.addonId) {
+      return generateServiceName(this.options.config.addonId);
+    }
+    // Fallback to legacy name
+    return 'stremio-addon';
+  }
+
+  /**
+   * Update service file with current configuration
+   * This allows updating environment variables without reinstalling
+   */
+  public async updateServiceFile(options?: { restartService?: boolean }): Promise<void> {
+    logger.info('Updating systemd service file', { addonId: this.options.config.addonId });
+
+    try {
+      const serviceName = this.getServiceName();
+      const targetDir = this.options.config.paths.addonDirectory;
+      const addonName = this.options.config.addon.name;
+
+      // Get environment variables from config (with overrides if any)
+      // Pass overrides directly - mergeEnvVars handles null values
+      const envVars = EnvVarManager.mergeEnvVars(
+        this.options.config,
+        this.options.config.addon.environmentVariables
+      );
+
+      // Generate service file content
+      const serviceConfig = ServiceFileManager.generateServiceFile({
+        serviceName,
+        addonName,
+        addonDirectory: targetDir,
+        port: this.options.config.addon.port || 7000,
+        envVars,
+        autoStart: this.options.config.features.autoStart,
+      });
+
+      // Backup existing service file
+      try {
+        await ServiceFileManager.backupServiceFile(serviceName, this.ssh);
+      } catch (error) {
+        logger.warn('Failed to backup service file, continuing anyway', error);
+      }
+
+      // Write service file
+      const servicePath = this.options.config.paths.serviceFile;
+      
+      if (this.ssh) {
+        // Remote: write via SSH
+        const tempPath = `/tmp/${serviceName}.service.${Date.now()}`;
+        await this.execCommand(`cat > ${tempPath} << 'EOF'\n${serviceConfig}\nEOF`);
+        await this.execSudo(`mv ${tempPath} ${servicePath}`);
+      } else {
+        // Local: write to temp then move with sudo
+        const { exec } = await import('node:child_process');
+        const { promisify } = await import('node:util');
+        const execAsync = promisify(exec);
+        const tempPath = `/tmp/${serviceName}.service.${Date.now()}`;
+        const fs = await import('node:fs/promises');
+        await fs.writeFile(tempPath, serviceConfig, 'utf-8');
+        await execAsync(`sudo mv ${tempPath} ${servicePath}`);
+      }
+
+      // Reload systemd
+      await this.execSudo('systemctl daemon-reload');
+
+      // Restart service if requested
+      if (options?.restartService) {
+        const serviceManager = new ServiceManager(serviceName, this.ssh);
+        await serviceManager.restart();
+        logger.info('Service restarted after service file update');
+      }
+
+      logger.info('Service file updated successfully', { serviceName });
+    } catch (error) {
+      logger.error('Failed to update service file', error);
+      throw new Error(`Failed to update service file: ${(error as Error).message}`);
+    }
   }
 }
 

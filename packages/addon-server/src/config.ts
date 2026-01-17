@@ -15,6 +15,7 @@ export interface ServerConfig {
   // Server
   port: number;
   nodeEnv: string;
+  domain?: string; // Addon domain (for manifest base URL)
 
   // Features
   torrentLimit: number;
@@ -97,6 +98,7 @@ export function loadConfig(): ServerConfig {
     // Server
     port: parseInt(process.env.PORT || "7000", 10),
     nodeEnv: process.env.NODE_ENV || "development",
+    domain: process.env.ADDON_DOMAIN, // Optional domain for manifest base URL
 
     // Features
     torrentLimit,

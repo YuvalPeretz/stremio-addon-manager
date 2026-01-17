@@ -29,12 +29,14 @@ import {
 } from "react-icons/fi";
 import type { ServiceInfo, ServiceStatus } from "@stremio-addon-manager/core";
 import { serviceStatusAtom } from "../../atoms/serviceAtoms";
+import { selectedAddonIdAtom } from "../../atoms/addonAtoms";
 import styles from "./ServiceControl.module.scss";
 
 const { Title, Text } = Typography;
 
 function ServiceControl() {
   const [serviceStatus, setServiceStatus] = useAtom(serviceStatusAtom);
+  const [selectedAddonId] = useAtom(selectedAddonIdAtom);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [autoStartEnabled, setAutoStartEnabled] = useState(false);
@@ -45,11 +47,11 @@ function ServiceControl() {
     // Poll service status every 5 seconds
     const interval = setInterval(loadServiceStatus, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [selectedAddonId]);
 
   async function loadServiceStatus() {
     setRefreshing(true);
-    const result = await window.electron.service.status();
+    const result = await window.electron.service.status(undefined, selectedAddonId || undefined);
     setRefreshing(false);
 
     if (result.success && result.data) {
@@ -64,7 +66,7 @@ function ServiceControl() {
 
   async function handleStart() {
     setLoading(true);
-    const result = await window.electron.service.start();
+    const result = await window.electron.service.start(undefined, selectedAddonId || undefined);
     setLoading(false);
 
     if (result.success) {
@@ -83,7 +85,7 @@ function ServiceControl() {
       okType: "danger",
       onOk: async () => {
         setLoading(true);
-        const result = await window.electron.service.stop();
+        const result = await window.electron.service.stop(undefined, selectedAddonId || undefined);
         setLoading(false);
 
         if (result.success) {
@@ -98,7 +100,7 @@ function ServiceControl() {
 
   async function handleRestart() {
     setLoading(true);
-    const result = await window.electron.service.restart();
+    const result = await window.electron.service.restart(undefined, selectedAddonId || undefined);
     setLoading(false);
 
     if (result.success) {
@@ -112,8 +114,8 @@ function ServiceControl() {
   async function handleAutoStartToggle(enabled: boolean) {
     setLoading(true);
     const result = enabled
-      ? await window.electron.service.enableAutoStart()
-      : await window.electron.service.disableAutoStart();
+      ? await window.electron.service.enableAutoStart(undefined, selectedAddonId || undefined)
+      : await window.electron.service.disableAutoStart(undefined, selectedAddonId || undefined);
     setLoading(false);
 
     if (result.success) {
@@ -179,7 +181,14 @@ function ServiceControl() {
   return (
     <Flex vertical gap={24} className={styles.serviceControl}>
       <Flex justify="space-between" align="center">
-        <Title level={2}>Service Control</Title>
+        <Title level={2}>
+          Service Control
+          {selectedAddonId && (
+            <Text type="secondary" style={{ fontSize: "14px", fontWeight: "normal", marginLeft: 12 }}>
+              ({selectedAddonId})
+            </Text>
+          )}
+        </Title>
         <Button
           icon={<FiRotateCw className={refreshing ? styles.spinning : ""} />}
           onClick={loadServiceStatus}

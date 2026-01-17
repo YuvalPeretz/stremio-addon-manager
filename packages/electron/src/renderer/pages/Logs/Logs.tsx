@@ -26,6 +26,7 @@ import {
   FiSearch,
 } from "react-icons/fi";
 import { serviceLogsAtom } from "../../atoms/serviceAtoms";
+import { selectedAddonIdAtom } from "../../atoms/addonAtoms";
 import styles from "./Logs.module.scss";
 
 const { Title, Text } = Typography;
@@ -41,6 +42,7 @@ interface LogEntry {
 
 function Logs() {
   const [logs, setLogs] = useAtom(serviceLogsAtom);
+  const [selectedAddonId] = useAtom(selectedAddonIdAtom);
   const [loading, setLoading] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
   const [logLevel, setLogLevel] = useState<LogLevel>("all");
@@ -54,7 +56,7 @@ function Logs() {
     // Poll logs every 5 seconds
     const interval = setInterval(loadLogs, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [selectedAddonId]);
 
   useEffect(() => {
     if (autoScroll && logsEndRef.current) {
@@ -97,7 +99,7 @@ function Logs() {
 
   async function loadLogs() {
     setLoading(true);
-    const result = await window.electron.service.getLogs();
+    const result = await window.electron.service.getLogs(undefined, undefined, selectedAddonId || undefined);
     setLoading(false);
 
     if (result.success && result.data) {
@@ -136,7 +138,7 @@ function Logs() {
       okText: "Clear",
       okType: "danger",
       onOk: async () => {
-        const result = await window.electron.service.clearLogs();
+        const result = await window.electron.service.clearLogs(undefined, selectedAddonId || undefined);
         if (result.success) {
           setLogs("");
           setParsedLogs([]);
@@ -200,7 +202,14 @@ function Logs() {
   return (
     <Flex vertical gap={24} className={styles.logs}>
       <Flex justify="space-between" align="center">
-        <Title level={2}>Service Logs</Title>
+        <Title level={2}>
+          Service Logs
+          {selectedAddonId && (
+            <Text type="secondary" style={{ fontSize: "14px", fontWeight: "normal", marginLeft: 12 }}>
+              ({selectedAddonId})
+            </Text>
+          )}
+        </Title>
         <Space>
           <Text type="secondary">Auto-scroll:</Text>
           <Switch checked={autoScroll} onChange={setAutoScroll} />

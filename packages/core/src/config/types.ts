@@ -74,6 +74,12 @@ export interface AddonConfig {
    * Recommended range: 1-10, default: 3
    */
   maxConcurrency?: number;
+  /**
+   * Environment variable overrides.
+   * These take precedence over config-derived values when generating service files.
+   * Use null to remove an override and reset to default/config value.
+   */
+  environmentVariables?: Record<string, string | null>;
 }
 
 /**
@@ -134,9 +140,35 @@ export interface InstallationConfig {
 }
 
 /**
+ * Addon metadata stored in registry
+ */
+export interface AddonMetadata {
+  id: string;
+  name: string;
+  slug: string;
+  configPath: string;
+  serviceName: string;
+  port: number;
+  domain: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Addon registry structure (data format)
+ */
+export interface AddonRegistryData {
+  version: string;
+  defaultAddonId?: string;
+  addons: AddonMetadata[];
+}
+
+/**
  * Complete addon manager configuration
  */
 export interface AddonManagerConfig {
+  addonId?: string;
+  serviceName?: string;
   installation: InstallationConfig;
   addon: AddonConfig;
   features: FeatureConfig;

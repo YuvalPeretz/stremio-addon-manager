@@ -14,6 +14,8 @@ import {
   Provider,
   OSDetector,
   SSHManager,
+  AddonRegistryManager,
+  generateServiceName,
   type SSHConfig,
   type AddonManagerConfig,
 } from '@stremio-addon-manager/core';
@@ -22,6 +24,7 @@ interface InstallOptions {
   remote?: boolean;
   config?: string;
   skipSsl?: boolean;
+  addonName?: string;
 }
 
 /**
@@ -31,28 +34,7 @@ export async function installCommand(options: InstallOptions): Promise<void> {
   console.log(chalk.bold.cyan('\n🚀 Stremio Addon Manager - Installation Wizard\n'));
 
   try {
-    // Initialize config manager
-    const configManager = new ConfigManager(options.config);
-
-    // Check if addon is already installed
-    const configExists = await configManager.exists();
-    if (configExists) {
-      const { overwrite } = await inquirer.prompt([
-        {
-          type: 'confirm',
-          name: 'overwrite',
-          message: 'Configuration already exists. Do you want to overwrite it?',
-          default: false,
-        },
-      ]);
-
-      if (!overwrite) {
-        console.log(chalk.yellow('\n⚠️  Installation cancelled.\n'));
-        return;
-      }
-
-      await configManager.delete();
-    }
+    // Note: We'll create addon-specific config manager later after addon ID is determined
 
     // Step 1: Determine installation type
     const installationType = options.remote
@@ -81,7 +63,51 @@ export async function installCommand(options: InstallOptions): Promise<void> {
     }
 
     // Step 3: Configure addon settings
-    const addonConfig = await promptAddonConfiguration();
+    // If --addon-name provided, use it; otherwise prompt
+    let addonName: string;
+    let addonConfig;
+    
+    if (options.addonName) {
+      addonName = options.addonName;
+      addonConfig = await promptAddonConfigurationWithName(addonName);
+    } else {
+      const addonConfigPrompt = await promptAddonConfiguration();
+      addonName = addonConfigPrompt.name;
+      addonConfig = addonConfigPrompt;
+    }
+
+    // Generate addon ID from name
+    const addonId = addonName
+      .toLowerCase()
+      .trim()
+      .replace(/[^\w\s-]/g, '')
+      .replace(/[\s_-]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+
+    if (!addonId) {
+      console.log(chalk.red('\n❌ Could not generate valid addon ID from name.\n'));
+      process.exit(1);
+    }
+
+    // Check for name conflicts
+    const registryManager = new AddonRegistryManager();
+    await registryManager.initialize();
+
+    // Ensure unique ID
+    let finalAddonId = addonId;
+    let counter = 1;
+    const registry = registryManager.getRegistry();
+    await registry.load();
+    while (registry.exists(finalAddonId)) {
+      finalAddonId = `${addonId}-${counter}`;
+      counter++;
+    }
+
+    // Check name availability
+    if (!(await registryManager.isNameAvailable(addonName, finalAddonId))) {
+      console.log(chalk.red(`\n❌ Addon name '${addonName}' is already in use.\n`));
+      process.exit(1);
+    }
 
     // Step 4: Select access method
     const accessMethod = await promptAccessMethod();
@@ -90,7 +116,10 @@ export async function installCommand(options: InstallOptions): Promise<void> {
     const features = await promptFeatures();
 
     // Step 6: Build complete configuration
+    const serviceName = generateServiceName(finalAddonId);
     const config: AddonManagerConfig = {
+      addonId: finalAddonId,
+      serviceName,
       installation: {
         type: installationType,
         accessMethod,
@@ -110,20 +139,23 @@ export async function installCommand(options: InstallOptions): Promise<void> {
         ssl: !options.skipSsl,
       },
       paths: {
-        addonDirectory: '/opt/stremio-addon',
-        nginxConfig: '/etc/nginx/sites-available/stremio-addon',
-        serviceFile: '/etc/systemd/system/stremio-addon.service',
-        logs: '/var/log/stremio-addon',
-        backups: '/var/backups/stremio-addon',
+        addonDirectory: `/opt/stremio-addon-${finalAddonId}`,
+        nginxConfig: `/etc/nginx/sites-available/stremio-addon-${finalAddonId}`,
+        serviceFile: `/etc/systemd/system/${serviceName}.service`,
+        logs: `/var/log/stremio-addon-${finalAddonId}`,
+        backups: `/var/backups/stremio-addon-${finalAddonId}`,
       },
       secrets: {},
     };
 
-    // Step 7: Save configuration
-    await configManager.save(config);
-    console.log(chalk.green('\n✅ Configuration saved successfully!\n'));
+    // Step 7: Create addon-specific config manager
+    const addonConfigManager = new ConfigManager(finalAddonId);
 
-    // Step 8: Start installation
+    // Step 8: Save configuration
+    await addonConfigManager.save(config);
+    console.log(chalk.green(`\n✅ Configuration saved for addon '${addonName}' (ID: ${finalAddonId})!\n`));
+
+    // Step 9: Start installation
     const { startInstallation } = await inquirer.prompt([
       {
         type: 'confirm',
@@ -166,9 +198,16 @@ export async function installCommand(options: InstallOptions): Promise<void> {
 
       if (result.success) {
         console.log(chalk.green.bold('\n🎉 Installation completed successfully!\n'));
+        console.log(chalk.cyan('Addon Name:'), chalk.blue(addonName));
+        console.log(chalk.cyan('Addon ID:'), chalk.blue(finalAddonId));
         console.log(chalk.cyan('Addon URL:'), chalk.blue.underline(result.addonUrl));
         console.log(chalk.cyan('Install in Stremio:'), chalk.blue.underline(result.installManifestUrl));
         console.log(chalk.gray(`\nCompleted in ${Math.round(result.duration / 1000)}s\n`));
+        
+        // Addon is already registered by InstallationManager, but show confirmation
+        if (result.addonId) {
+          console.log(chalk.green(`✅ Addon registered in registry with ID: ${result.addonId}\n`));
+        }
       } else {
         console.log(chalk.red.bold('\n❌ Installation failed!\n'));
         console.log(chalk.red(`Error: ${result.error?.message}\n`));
@@ -280,6 +319,58 @@ async function promptSSHConnection(): Promise<SSHConfig> {
 }
 
 /**
+ * Prompt for addon configuration with pre-set name
+ */
+async function promptAddonConfigurationWithName(addonName: string) {
+  const answers = await inquirer.prompt([
+    {
+      type: 'input',
+      name: 'domain',
+      message: 'Enter your domain (e.g., yourdomain.duckdns.org):',
+      validate: (input: string) => (input ? true : 'Domain is required'),
+    },
+    {
+      type: 'password',
+      name: 'password',
+      message: 'Enter addon password (for access control):',
+      mask: '*',
+      validate: (input: string) =>
+        input.length >= 8 ? true : 'Password must be at least 8 characters',
+    },
+    {
+      type: 'list',
+      name: 'provider',
+      message: 'Select streaming provider:',
+      choices: [
+        { name: 'Real-Debrid', value: Provider.REAL_DEBRID },
+        { name: 'AllDebrid', value: Provider.ALL_DEBRID },
+        { name: 'Premiumize', value: Provider.PREMIUMIZE },
+        { name: 'TorBox', value: Provider.TORBOX },
+      ],
+      default: Provider.REAL_DEBRID,
+    },
+    {
+      type: 'number',
+      name: 'torrentLimit',
+      message: 'Number of torrent options to show (5-25):',
+      default: 15,
+      validate: (input: number) =>
+        input >= 5 && input <= 25 ? true : 'Must be between 5 and 25',
+    },
+  ]);
+
+  return {
+    name: addonName,
+    domain: answers.domain,
+    password: answers.password,
+    provider: answers.provider,
+    torrentLimit: answers.torrentLimit,
+    version: '1.0.0',
+    port: 7000,
+  };
+}
+
+/**
  * Prompt for addon configuration
  */
 async function promptAddonConfiguration() {
@@ -289,8 +380,18 @@ async function promptAddonConfiguration() {
       name: 'name',
       message: 'Enter addon name:',
       default: 'My_Private_Addon',
-      validate: (input: string) =>
-        /^[a-zA-Z0-9_-]+$/.test(input) ? true : 'Only alphanumeric, dash, and underscore allowed',
+      validate: async (input: string) => {
+        if (!/^[a-zA-Z0-9\s_-]+$/.test(input)) {
+          return 'Only alphanumeric, spaces, dash, and underscore allowed';
+        }
+        // Check name availability
+        const registryManager = new AddonRegistryManager();
+        await registryManager.initialize();
+        if (!(await registryManager.isNameAvailable(input))) {
+          return `Addon name '${input}' is already in use`;
+        }
+        return true;
+      },
     },
     {
       type: 'input',

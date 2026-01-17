@@ -68,6 +68,7 @@ export interface PrerequisiteCheck {
 export interface InstallationResult {
   success: boolean;
   config: AddonManagerConfig;
+  addonId?: string;
   addonUrl: string;
   installManifestUrl: string;
   steps: InstallationProgress[];

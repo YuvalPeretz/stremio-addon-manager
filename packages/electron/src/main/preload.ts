@@ -20,13 +20,30 @@ const api = {
     detect: () => ipcRenderer.invoke("os:detect"),
   },
 
-  // Configuration
+  // Configuration (with addonId support)
   config: {
-    load: () => ipcRenderer.invoke("config:load"),
-    save: (config: unknown) => ipcRenderer.invoke("config:save", config),
-    get: (key: string) => ipcRenderer.invoke("config:get", key),
-    set: (key: string, value: unknown) => ipcRenderer.invoke("config:set", key, value),
-    exists: () => ipcRenderer.invoke("config:exists"),
+    load: (addonId?: string) => ipcRenderer.invoke("config:load", addonId),
+    save: (config: unknown, addonId?: string, options?: { syncServiceFile?: boolean; restartService?: boolean }) =>
+      ipcRenderer.invoke("config:save", config, addonId, options),
+    get: (key: string, addonId?: string) => ipcRenderer.invoke("config:get", key, addonId),
+    set: (key: string, value: unknown, addonId?: string) => ipcRenderer.invoke("config:set", key, value, addonId),
+    exists: (addonId?: string) => ipcRenderer.invoke("config:exists", addonId),
+  },
+
+  // Migration
+  migration: {
+    check: () => ipcRenderer.invoke("migration:check"),
+    migrate: () => ipcRenderer.invoke("migration:migrate"),
+  },
+
+  // Addon Management
+  addon: {
+    list: () => ipcRenderer.invoke("addon:list"),
+    get: (addonId: string) => ipcRenderer.invoke("addon:get", addonId),
+    getDefault: () => ipcRenderer.invoke("addon:getDefault"),
+    setDefault: (addonId: string) => ipcRenderer.invoke("addon:setDefault", addonId),
+    create: (name: string, port: number, domain: string) => ipcRenderer.invoke("addon:create", name, port, domain),
+    delete: (addonId: string) => ipcRenderer.invoke("addon:delete", addonId),
   },
 
   // Installation
@@ -40,17 +57,32 @@ const api = {
     },
   },
 
-  // Service Management
+  // Service Management (with addonId support)
   service: {
-    status: (ssh?: unknown) => ipcRenderer.invoke("service:status", ssh),
-    start: (ssh?: unknown) => ipcRenderer.invoke("service:start", ssh),
-    stop: (ssh?: unknown) => ipcRenderer.invoke("service:stop", ssh),
-    restart: (ssh?: unknown) => ipcRenderer.invoke("service:restart", ssh),
-    logs: (lines: number, ssh?: unknown) => ipcRenderer.invoke("service:logs", lines, ssh),
-    getLogs: (lines?: number, ssh?: unknown) => ipcRenderer.invoke("service:getLogs", lines, ssh),
-    clearLogs: (ssh?: unknown) => ipcRenderer.invoke("service:clearLogs", ssh),
-    enableAutoStart: (ssh?: unknown) => ipcRenderer.invoke("service:enableAutoStart", ssh),
-    disableAutoStart: (ssh?: unknown) => ipcRenderer.invoke("service:disableAutoStart", ssh),
+    status: (ssh?: unknown, addonId?: string) => ipcRenderer.invoke("service:status", ssh, addonId),
+    start: (ssh?: unknown, addonId?: string) => ipcRenderer.invoke("service:start", ssh, addonId),
+    stop: (ssh?: unknown, addonId?: string) => ipcRenderer.invoke("service:stop", ssh, addonId),
+    restart: (ssh?: unknown, addonId?: string) => ipcRenderer.invoke("service:restart", ssh, addonId),
+    logs: (lines: number, ssh?: unknown, addonId?: string) => ipcRenderer.invoke("service:logs", lines, ssh, addonId),
+    getLogs: (lines?: number, ssh?: unknown, addonId?: string) =>
+      ipcRenderer.invoke("service:getLogs", lines, ssh, addonId),
+    clearLogs: (ssh?: unknown, addonId?: string) => ipcRenderer.invoke("service:clearLogs", ssh, addonId),
+    enableAutoStart: (ssh?: unknown, addonId?: string) => ipcRenderer.invoke("service:enableAutoStart", ssh, addonId),
+    disableAutoStart: (ssh?: unknown, addonId?: string) => ipcRenderer.invoke("service:disableAutoStart", ssh, addonId),
+  },
+
+  // Environment Variables
+  env: {
+    list: (ssh?: unknown, addonId?: string) => ipcRenderer.invoke("env:list", ssh, addonId),
+    get: (key: string, ssh?: unknown, addonId?: string) => ipcRenderer.invoke("env:get", key, ssh, addonId),
+    set: (key: string, value: string, ssh?: unknown, addonId?: string) =>
+      ipcRenderer.invoke("env:set", key, value, ssh, addonId),
+    unset: (key: string, ssh?: unknown, addonId?: string) => ipcRenderer.invoke("env:unset", key, ssh, addonId),
+    reset: (ssh?: unknown, addonId?: string) => ipcRenderer.invoke("env:reset", ssh, addonId),
+    sync: (ssh?: unknown, addonId?: string, restartService?: boolean) =>
+      ipcRenderer.invoke("env:sync", ssh, addonId, restartService),
+    generate: (key: string, ssh?: unknown, addonId?: string) => ipcRenderer.invoke("env:generate", key, ssh, addonId),
+    getMetadata: () => ipcRenderer.invoke("env:getMetadata"),
   },
 
   // SSH

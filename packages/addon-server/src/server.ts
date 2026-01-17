@@ -150,8 +150,43 @@ export function createServer(
   // Manifest endpoint
   app.get("/:password/manifest.json", authenticateToken, (req: Request, res: Response) => {
     const password = req.params.password;
-    const protocol = req.headers["x-forwarded-proto"] || req.protocol;
-    const host = req.headers["x-forwarded-host"] || req.get("host");
+    
+    // Use configured domain if available, otherwise fall back to request host
+    let host: string;
+    let protocol: string;
+    
+    if (config.domain) {
+      // Use configured domain
+      host = config.domain;
+      const forwardedProto = req.headers["x-forwarded-proto"];
+      protocol = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) || req.protocol || "https";
+      
+      // Validate that incoming host matches configured domain (log warning if mismatch)
+      const forwardedHost = req.headers["x-forwarded-host"];
+      const requestHost = req.get("host");
+      const incomingHost = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) || 
+                          (Array.isArray(requestHost) ? requestHost[0] : requestHost);
+      if (incomingHost && incomingHost !== config.domain) {
+        console.warn(
+          `⚠️  Host mismatch: Request came from '${incomingHost}' but addon is configured for '${config.domain}'. ` +
+          `This may indicate a misconfigured reverse proxy. Using configured domain '${config.domain}'.`
+        );
+      }
+    } else {
+      // Fall back to request host (legacy behavior)
+      const forwardedProto = req.headers["x-forwarded-proto"];
+      protocol = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto) || req.protocol;
+      const forwardedHost = req.headers["x-forwarded-host"];
+      const requestHost = req.get("host");
+      host = (Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost) || 
+             (Array.isArray(requestHost) ? requestHost[0] : requestHost) || 
+             "localhost";
+      console.warn(
+        `⚠️  ADDON_DOMAIN not set. Using request host '${host}'. ` +
+        `Set ADDON_DOMAIN environment variable for proper multi-addon support.`
+      );
+    }
+    
     const baseUrl = `${protocol}://${host}/${password}`;
 
     const manifestWithBase = {

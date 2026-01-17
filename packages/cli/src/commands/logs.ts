@@ -4,9 +4,17 @@
  */
 
 import chalk from "chalk";
-import { logger, ConfigManager, ServiceManager, SSHManager } from "@stremio-addon-manager/core";
+import {
+  logger,
+  ConfigManager,
+  ServiceManager,
+  SSHManager,
+  getServiceNameFromAddonId,
+} from "@stremio-addon-manager/core";
+import { resolveAddonId, getAddonMetadata } from "../utils/addon-resolver.js";
 
 interface LogsOptions {
+  addon?: string;
   lines?: string;
   follow?: boolean;
   remote?: boolean;
@@ -17,7 +25,19 @@ interface LogsOptions {
  */
 export async function logsCommand(options: LogsOptions): Promise<void> {
   try {
-    const configManager = new ConfigManager();
+    const resolvedAddonId = await resolveAddonId(options.addon);
+    if (!resolvedAddonId) {
+      console.log(chalk.yellow("\n⚠️  No addon specified or found.\n"));
+      process.exit(1);
+    }
+
+    const addon = await getAddonMetadata(resolvedAddonId);
+    if (!addon) {
+      console.log(chalk.red(`\n❌ Addon '${resolvedAddonId}' not found.\n`));
+      process.exit(1);
+    }
+
+    const configManager = new ConfigManager(resolvedAddonId);
     const config = await configManager.load();
 
     let ssh: SSHManager | undefined;
@@ -33,11 +53,12 @@ export async function logsCommand(options: LogsOptions): Promise<void> {
       await ssh.connect();
     }
 
-    const serviceManager = new ServiceManager("stremio-addon", ssh);
+    const serviceName = config.serviceName || getServiceNameFromAddonId(resolvedAddonId);
+    const serviceManager = new ServiceManager(serviceName, ssh);
     const lines = parseInt(options.lines || "50", 10);
     const logs = await serviceManager.logs(lines, options.follow);
 
-    console.log(chalk.bold.cyan("\n📋 Addon Service Logs\n"));
+    console.log(chalk.bold.cyan(`\n📋 Addon Service Logs: ${addon.name}\n`));
     console.log(chalk.gray("─".repeat(80)));
     console.log(logs);
     console.log(chalk.gray("─".repeat(80) + "\n"));
