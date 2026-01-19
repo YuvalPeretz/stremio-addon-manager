@@ -15,12 +15,14 @@
     "dev": "vite",
     "dev:main": "tsc --build tsconfig.json tsconfig.preload.json --watch",
     "dev:renderer": "vite --config vite.renderer.config.ts",
-    "build": "vite build",
-    "build:main": "tsc --build tsconfig.json && tsc --build tsconfig.preload.json && node --input-type=module -e \"import fs from 'fs'; const p='dist/src/main/preload.js'; if(fs.existsSync(p)){fs.renameSync(p, p.replace('.js', '.cjs')); console.log('Renamed preload.js to preload.cjs');}\"",
+    "build": "npm run build:packages && vite build",
+    "build:packages": "npm run build:cli && node scripts/copy-packages.js",
+    "build:cli": "cd ../cli && npm run build",
+    "build:main": "tsc --build tsconfig.json && tsc --build tsconfig.preload.json && node scripts/rename-preload.js",
     "build:renderer": "vite build --config vite.renderer.config.ts",
     "start": "npm run build:main && electron .",
     "package": "electron-builder",
-    "clean": "rimraf dist .tsbuildinfo"
+    "clean": "rimraf dist .tsbuildinfo resources"
   },
   "dependencies": {
     "@stremio-addon-manager/core": "^1.0.0",
@@ -50,7 +52,8 @@
     },
     "files": [
       "dist/**/*",
-      "package.json"
+      "package.json",
+      "resources/**/*"
     ],
     "win": {
       "target": [

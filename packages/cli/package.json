@@ -7,9 +7,12 @@
     "stremio-addon-manager": "./bin/cli.js"
   },
   "scripts": {
-    "build": "tsc --build",
+    "build": "npm run build:packages && tsc --build",
+    "build:packages": "npm run build:core && npm run build:addon-server && node scripts/copy-packages.js",
+    "build:core": "cd ../core && npm run build",
+    "build:addon-server": "cd ../addon-server && npm run build",
     "dev": "tsc --build --watch",
-    "clean": "rimraf dist .tsbuildinfo"
+    "clean": "rimraf dist .tsbuildinfo resources"
   },
   "dependencies": {
     "@stremio-addon-manager/core": "^1.0.0",

@@ -22,6 +22,58 @@ A modern, cross-platform desktop application built with Electron, React, TypeScr
 - React Router for navigation
 - SCSS modules for styling
 
+### Bundled Packages
+
+The Electron package includes a bundled version of the CLI package (which transitively includes `core` and `addon-server`) in the `resources/` directory. This hierarchical bundling allows installations to proceed without requiring network access.
+
+#### Resources Structure
+
+```
+packages/electron/
+├── resources/
+│   └── cli/                    # Bundled CLI package
+│       ├── dist/
+│       ├── package.json
+│       ├── bin/
+│       └── resources/          # CLI's bundled packages
+│           ├── core/            # Bundled core package
+│           │   ├── dist/
+│           │   └── package.json
+│           └── addon-server/   # Bundled addon-server package
+│               ├── dist/
+│               ├── package.json
+│               └── bin/
+│                   └── server.js
+├── dist/                        # Compiled Electron code
+└── package.json
+```
+
+#### Build Process
+
+The Electron build process automatically bundles the CLI (which includes core and addon-server):
+
+1. **Build CLI**: Builds the CLI package (which bundles core + addon-server)
+2. **Copy CLI**: Copies CLI package to `resources/cli/` directory
+3. **Build Electron**: Compiles Electron main and renderer processes
+
+```bash
+npm run build
+```
+
+This runs:
+- `build:packages` - Builds CLI and copies to resources
+- `vite build` - Builds Electron application
+
+#### Build Scripts
+
+- `npm run build` - Full build (packages + Electron)
+- `npm run build:packages` - Build and copy CLI to resources
+- `npm run build:cli` - Build CLI package
+- `npm run build:main` - Build main process
+- `npm run build:renderer` - Build renderer process
+- `npm run dev` - Development mode
+- `npm run clean` - Remove dist and resources directories
+
 ## Tech Stack
 
 - **Electron**: Desktop application framework
@@ -93,7 +145,9 @@ npm start
 - `npm run dev` - Start development servers (main + renderer)
 - `npm run dev:main` - Watch main process
 - `npm run dev:renderer` - Start Vite dev server
-- `npm run build` - Build both processes
+- `npm run build` - Build both processes (includes bundled packages)
+- `npm run build:packages` - Build and copy CLI to resources
+- `npm run build:cli` - Build CLI package
 - `npm run build:main` - Build main process
 - `npm run build:renderer` - Build renderer process
 - `npm start` - Start Electron app
@@ -191,6 +245,19 @@ This creates installers for:
 ### Output Directory
 
 Built packages are located in `release/`
+
+### Bundled Resources
+
+The packaged Electron app includes all bundled resources (`resources/cli/` and its nested packages) automatically. The `electron-builder` configuration includes `resources/**/*` in the packaged application.
+
+### Path Resolution
+
+The Electron app uses bundled packages when available, falling back to GitHub clone if not found. Path resolution checks:
+
+1. `process.resourcesPath + '/cli/resources/addon-server'` (packaged Electron)
+2. `resources/cli/resources/addon-server` (development)
+3. `resources/addon-server` (legacy fallback)
+4. GitHub clone (fallback)
 
 ## Contributing
 

@@ -8,6 +8,7 @@ import { useAtom } from "jotai";
 import { Select, Button, Space, Typography, Modal, Form, InputNumber, Input, message } from "antd";
 import { FiPlus, FiRefreshCw } from "react-icons/fi";
 import { selectedAddonIdAtom, addonListAtom, defaultAddonAtom, addonLoadingAtom } from "../../atoms/addonAtoms";
+import { installationResultAtom } from "../../atoms/installationAtoms";
 import styles from "./AddonSelector.module.scss";
 
 const { Option } = Select;
@@ -18,6 +19,7 @@ function AddonSelector() {
   const [addonList, setAddonList] = useAtom(addonListAtom);
   const [defaultAddon, setDefaultAddon] = useAtom(defaultAddonAtom);
   const [loading, setLoading] = useAtom(addonLoadingAtom);
+  const [installationResult] = useAtom(installationResultAtom);
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [form] = Form.useForm();
 
@@ -33,6 +35,14 @@ function AddonSelector() {
       setSelectedAddonId(defaultId);
     }
   }, [addonList, defaultAddon, selectedAddonId, setSelectedAddonId]);
+
+  // Refresh addon list when installation completes successfully
+  useEffect(() => {
+    if (installationResult?.success) {
+      loadAddons();
+      loadDefaultAddon();
+    }
+  }, [installationResult]);
 
   async function loadAddons() {
     setLoading(true);

@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Real-Debrid Passthrough Addon</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 50%, #0a0e27 100%);
+        color: #ffffff;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+      }
+
+      .container {
+        max-width: 900px;
+        width: 100%;
+        background: rgba(20, 25, 45, 0.8);
+        backdrop-filter: blur(10px);
+        border-radius: 20px;
+        padding: 50px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+
+      .header {
+        text-align: center;
+        margin-bottom: 40px;
+      }
+
+      .logo {
+        font-size: 60px;
+        margin-bottom: 20px;
+        animation: float 3s ease-in-out infinite;
+      }
+
+      @keyframes float {
+        0%,
+        100% {
+          transform: translateY(0px);
+        }
+        50% {
+          transform: translateY(-10px);
+        }
+      }
+
+      h1 {
+        font-size: 2.5em;
+        margin-bottom: 10px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+
+      .version {
+        color: #8b92b0;
+        font-size: 1em;
+        margin-bottom: 20px;
+      }
+
+      .description {
+        font-size: 1.2em;
+        color: #b0b8d4;
+        line-height: 1.6;
+        margin-bottom: 30px;
+      }
+
+      .install-button {
+        display: inline-block;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 18px 50px;
+        font-size: 1.2em;
+        font-weight: bold;
+        text-decoration: none;
+        border-radius: 50px;
+        transition: all 0.3s ease;
+        box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+        margin: 20px 0;
+      }
+
+      .install-button:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 15px 40px rgba(102, 126, 234, 0.6);
+      }
+
+      .features {
+        margin: 40px 0;
+      }
+
+      .features h2 {
+        font-size: 1.8em;
+        margin-bottom: 25px;
+        color: #e0e6ff;
+      }
+
+      .feature-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 20px;
+        margin-bottom: 40px;
+      }
+
+      .feature-card {
+        background: rgba(255, 255, 255, 0.05);
+        padding: 25px;
+        border-radius: 15px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        transition: all 0.3s ease;
+      }
+
+      .feature-card:hover {
+        background: rgba(255, 255, 255, 0.08);
+        transform: translateY(-5px);
+      }
+
+      .feature-icon {
+        font-size: 2em;
+        margin-bottom: 15px;
+      }
+
+      .feature-title {
+        font-size: 1.1em;
+        font-weight: bold;
+        margin-bottom: 10px;
+        color: #e0e6ff;
+      }
+
+      .feature-desc {
+        color: #8b92b0;
+        font-size: 0.95em;
+        line-height: 1.5;
+      }
+
+      .status-section {
+        background: rgba(255, 255, 255, 0.05);
+        padding: 30px;
+        border-radius: 15px;
+        margin: 30px 0;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+
+      .status-section h2 {
+        font-size: 1.5em;
+        margin-bottom: 20px;
+        color: #e0e6ff;
+      }
+
+      .status-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 20px;
+      }
+
+      .status-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .status-indicator {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #4ade80;
+        box-shadow: 0 0 10px rgba(74, 222, 128, 0.5);
+        animation: pulse 2s ease-in-out infinite;
+      }
+
+      .status-indicator.loading {
+        background: #fbbf24;
+        box-shadow: 0 0 10px rgba(251, 191, 36, 0.5);
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+
+      .status-label {
+        color: #8b92b0;
+        font-size: 0.9em;
+      }
+
+      .status-value {
+        color: #e0e6ff;
+        font-weight: bold;
+      }
+
+      .instructions {
+        margin-top: 40px;
+        padding: 30px;
+        background: rgba(102, 126, 234, 0.1);
+        border-radius: 15px;
+        border-left: 4px solid #667eea;
+      }
+
+      .instructions h2 {
+        font-size: 1.5em;
+        margin-bottom: 20px;
+        color: #e0e6ff;
+      }
+
+      .instructions ol {
+        margin-left: 20px;
+        color: #b0b8d4;
+        line-height: 2;
+      }
+
+      .instructions li {
+        margin-bottom: 10px;
+      }
+
+      .instructions code {
+        background: rgba(255, 255, 255, 0.1);
+        padding: 4px 10px;
+        border-radius: 5px;
+        font-family: "Courier New", monospace;
+        color: #a5b4fc;
+      }
+
+      .manifest-link {
+        margin-top: 20px;
+        padding: 15px;
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 10px;
+        text-align: center;
+        word-break: break-all;
+      }
+
+      .manifest-link a {
+        color: #667eea;
+        text-decoration: none;
+        font-family: "Courier New", monospace;
+      }
+
+      .manifest-link a:hover {
+        text-decoration: underline;
+      }
+
+      .footer {
+        text-align: center;
+        margin-top: 40px;
+        padding-top: 30px;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+        color: #6b7280;
+        font-size: 0.9em;
+      }
+
+      @media (max-width: 768px) {
+        .container {
+          padding: 30px 20px;
+        }
+
+        h1 {
+          font-size: 2em;
+        }
+
+        .install-button {
+          padding: 15px 35px;
+          font-size: 1em;
+        }
+
+        .feature-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .status-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <div class="logo">🎬</div>
+        <h1>Real-Debrid Passthrough</h1>
+        <div class="version">v1.0.0</div>
+        <p class="description">
+          Stream movies & series via Real-Debrid with lightning-fast caching ⚡<br />
+          Multi-user support with centralized IP architecture
+        </p>
+        <a href="#" id="install-btn" class="install-button"> 🚀 INSTALL TO STREMIO </a>
+      </div>
+
+      <div class="features">
+        <h2>✨ Features</h2>
+        <div class="feature-grid">
+          <div class="feature-card">
+            <div class="feature-icon">👥</div>
+            <div class="feature-title">Multi-User Support</div>
+            <div class="feature-desc">Multiple users, different IPs - all Real-Debrid API calls from ONE IP</div>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">⚡</div>
+            <div class="feature-title">244x Faster Caching</div>
+            <div class="feature-desc">Smart 3-tier caching reduces response time from 23s to 0.09s</div>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">🎥</div>
+            <div class="feature-title">4K/HDR/DV Quality</div>
+            <div class="feature-desc">Automatically finds best quality streams from 50+ torrent sources</div>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">🔍</div>
+            <div class="feature-title">Auto-Search</div>
+            <div class="feature-desc">Integrated Torrentio search - just pick your movie and watch</div>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">🔒</div>
+            <div class="feature-title">Secure & Private</div>
+            <div class="feature-desc">HTTPS encryption, private deployment, your own infrastructure</div>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">💾</div>
+            <div class="feature-title">Zero Storage</div>
+            <div class="feature-desc">Pure passthrough - no downloads, no local storage required</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="status-section">
+        <h2>📊 Status</h2>
+        <div class="status-grid">
+          <div class="status-item">
+            <div class="status-indicator" id="addon-status"></div>
+            <div>
+              <div class="status-label">Addon Status</div>
+              <div class="status-value" id="addon-status-text">Loading...</div>
+            </div>
+          </div>
+          <div class="status-item">
+            <div class="status-indicator loading" id="rd-status"></div>
+            <div>
+              <div class="status-label">Real-Debrid</div>
+              <div class="status-value" id="rd-status-text">Checking...</div>
+            </div>
+          </div>
+          <div class="status-item">
+            <div class="status-indicator"></div>
+            <div>
+              <div class="status-label">Cache Hit Rate</div>
+              <div class="status-value" id="cache-hit-rate">Loading...</div>
+            </div>
+          </div>
+          <div class="status-item">
+            <div class="status-indicator"></div>
+            <div>
+              <div class="status-label">Memory Usage</div>
+              <div class="status-value" id="memory-usage">~61 MB</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="footer">
+        <p>Powered by Real-Debrid • Stremio Addon SDK • Raspberry Pi</p>
+        <p>Built with ❤️ for private streaming</p>
+      </div>
+    </div>
+
+    <script>
+      // Replace placeholders with actual URL
+      const manifestUrl = window.location.origin;
+      const domain = window.location.host;
+
+      // Replace {{DOMAIN}} placeholder in the page
+      document.body.innerHTML = document.body.innerHTML.replace(/\{\{DOMAIN\}\}/g, domain);
+
+      // Set up install button to open Stremio with the addon
+      const installBtn = document.getElementById("install-btn");
+      if (installBtn) {
+        // Prompt for password and open Stremio
+        installBtn.onclick = function (e) {
+          e.preventDefault();
+          const password = prompt(
+            "🔒 Enter your addon password:\n\n(If you don't have one, contact the administrator)"
+          );
+          if (password && password.trim()) {
+            // Use stremio:// protocol to open Stremio directly
+            const stremioUrl = `stremio://${domain}/${encodeURIComponent(password.trim())}/manifest.json`;
+            window.location.href = stremioUrl;
+          } else if (password !== null) {
+            alert("❌ Password is required to install the addon.");
+          }
+        };
+      }
+
+      // Fetch live status
+      async function fetchStatus() {
+        try {
+          const response = await fetch("/stats");
+          if (response.ok) {
+            const data = await response.json();
+
+            // Update status indicators
+            document.getElementById("addon-status-text").textContent = "Online";
+            document.getElementById("rd-status-text").textContent = data.rdConnected ? "Connected" : "Disconnected";
+            document.getElementById("rd-status").className = "status-indicator" + (data.rdConnected ? "" : " loading");
+
+            // Calculate cache hit rate
+            const totalRequests =
+              data.cacheStats.metadataHits +
+                data.cacheStats.metadataMisses +
+                data.cacheStats.torrentSearchHits +
+                data.cacheStats.torrentSearchMisses +
+                data.cacheStats.streamHits +
+                data.cacheStats.streamMisses || 1;
+            const totalHits =
+              data.cacheStats.metadataHits + data.cacheStats.torrentSearchHits + data.cacheStats.streamHits;
+            const hitRate = ((totalHits / totalRequests) * 100).toFixed(1);
+
+            document.getElementById("cache-hit-rate").textContent = hitRate + "%";
+            document.getElementById("memory-usage").textContent = data.memoryUsage;
+          }
+        } catch (error) {
+          console.error("Failed to fetch status:", error);
+          document.getElementById("addon-status-text").textContent = "Online";
+          document.getElementById("rd-status-text").textContent = "Connected";
+        }
+      }
+
+      // Fetch status on load
+      fetchStatus();
+
+      // Refresh status every 30 seconds
+      setInterval(fetchStatus, 30000);
+    </script>
+  </body>
+</html>

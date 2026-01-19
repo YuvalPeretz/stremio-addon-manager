@@ -10,6 +10,7 @@ import {
   ServiceManager,
   getServiceNameFromAddonId,
   EnvVarManager,
+  SSHManager,
 } from "@stremio-addon-manager/core";
 import { resolveAddonId, getConfigManagerForAddon } from "../utils/addon-resolver.js";
 
@@ -42,11 +43,12 @@ function formatEnvVar(
 ): string {
   const metadata = EnvVarManager.getEnvVarMetadata(key);
   const displayValue = showValue ? (metadata?.sensitive ? maskValue(key, value) : value) : "(hidden)";
-  const sourceColor =
-    source === "override" ? chalk.yellow : source === "config" ? chalk.cyan : chalk.gray;
+  const sourceColor = source === "override" ? chalk.yellow : source === "config" ? chalk.cyan : chalk.gray;
   const sourceLabel = source === "override" ? "[override]" : source === "config" ? "[config]" : "[default]";
 
-  return `${chalk.bold(key.padEnd(25))} ${displayValue.padEnd(30)} ${sourceColor(sourceLabel.padEnd(12))} ${metadata?.description || ""}`;
+  return `${chalk.bold(key.padEnd(25))} ${displayValue.padEnd(30)} ${sourceColor(sourceLabel.padEnd(12))} ${
+    metadata?.description || ""
+  }`;
 }
 
 /**
@@ -62,8 +64,22 @@ export async function envListCommand(options: EnvOptions): Promise<void> {
 
     const configManager = getConfigManagerForAddon(addonId);
     const config = await configManager.load();
+
+    // Setup SSH connection if needed
+    let ssh: SSHManager | undefined;
+    if (config.installation.type === "remote" && config.installation.target) {
+      ssh = new SSHManager({
+        host: config.installation.target.host || "",
+        port: config.installation.target.port || 22,
+        username: config.installation.target.username || "",
+        password: config.installation.target.password,
+        privateKeyPath: config.installation.target.privateKeyPath,
+      });
+      await ssh.connect();
+    }
+
     const serviceName = getServiceNameFromAddonId(addonId);
-    const serviceManager = new ServiceManager(serviceName);
+    const serviceManager = new ServiceManager(serviceName, ssh);
 
     console.log(chalk.bold.cyan(`\n📋 Environment Variables for Addon: ${config.addon.name} (${addonId})\n`));
     console.log(chalk.gray("─".repeat(120)));
@@ -78,7 +94,9 @@ export async function envListCommand(options: EnvOptions): Promise<void> {
 
       // Display header
       console.log(
-        `${chalk.bold("Variable".padEnd(25))} ${chalk.bold("Value".padEnd(30))} ${chalk.bold("Source".padEnd(12))} ${chalk.bold("Description")}`
+        `${chalk.bold("Variable".padEnd(25))} ${chalk.bold("Value".padEnd(30))} ${chalk.bold(
+          "Source".padEnd(12)
+        )} ${chalk.bold("Description")}`
       );
       console.log(chalk.gray("─".repeat(120)));
 
@@ -107,13 +125,20 @@ export async function envListCommand(options: EnvOptions): Promise<void> {
       const fromConfig = EnvVarManager.getEnvVarsFromConfig(config);
 
       console.log(
-        `${chalk.bold("Variable".padEnd(25))} ${chalk.bold("Value".padEnd(30))} ${chalk.bold("Source".padEnd(12))} ${chalk.bold("Description")}`
+        `${chalk.bold("Variable".padEnd(25))} ${chalk.bold("Value".padEnd(30))} ${chalk.bold(
+          "Source".padEnd(12)
+        )} ${chalk.bold("Description")}`
       );
       console.log(chalk.gray("─".repeat(120)));
 
       for (const [key, value] of Object.entries(fromConfig)) {
         const source = EnvVarManager.getEnvVarSource(key, config, config.addon.environmentVariables);
         console.log(formatEnvVar(key, value, source, true));
+      }
+    } finally {
+      // Cleanup SSH connection
+      if (ssh) {
+        await ssh.disconnect();
       }
     }
 
@@ -145,8 +170,22 @@ export async function envGetCommand(key: string, options: EnvOptions): Promise<v
 
     const configManager = getConfigManagerForAddon(addonId);
     const config = await configManager.load();
+
+    // Setup SSH connection if needed
+    let ssh: SSHManager | undefined;
+    if (config.installation.type === "remote" && config.installation.target) {
+      ssh = new SSHManager({
+        host: config.installation.target.host || "",
+        port: config.installation.target.port || 22,
+        username: config.installation.target.username || "",
+        password: config.installation.target.password,
+        privateKeyPath: config.installation.target.privateKeyPath,
+      });
+      await ssh.connect();
+    }
+
     const serviceName = getServiceNameFromAddonId(addonId);
-    const serviceManager = new ServiceManager(serviceName);
+    const serviceManager = new ServiceManager(serviceName, ssh);
 
     try {
       const envVars = await serviceManager.getEnvironmentVariables();
@@ -176,9 +215,11 @@ export async function envGetCommand(key: string, options: EnvOptions): Promise<v
         console.log(chalk.gray("─".repeat(60)));
         console.log();
       }
-    } catch (error) {
-      console.log(chalk.red(`\n❌ Failed to get environment variable: ${(error as Error).message}\n`));
-      process.exit(1);
+    } finally {
+      // Cleanup SSH connection
+      if (ssh) {
+        await ssh.disconnect();
+      }
     }
   } catch (error) {
     logger.error("Failed to get environment variable", error);
@@ -237,34 +278,55 @@ export async function envSetCommand(key: string, value: string, options: EnvOpti
 
     const configManager = getConfigManagerForAddon(addonId);
     const config = await configManager.load();
-    const serviceName = getServiceNameFromAddonId(addonId);
-    const serviceManager = new ServiceManager(serviceName);
 
-    // Get current environment variables
-    const currentEnvVars = await serviceManager.getEnvironmentVariables();
-
-    // Update the specific variable
-    currentEnvVars[key] = value;
-
-    // Update service file
-    await serviceManager.setEnvironmentVariables(currentEnvVars);
-
-    // Optionally save as override in config
-    if (!config.addon.environmentVariables) {
-      config.addon.environmentVariables = {};
+    // Setup SSH connection if needed
+    let ssh: SSHManager | undefined;
+    if (config.installation.type === "remote" && config.installation.target) {
+      ssh = new SSHManager({
+        host: config.installation.target.host || "",
+        port: config.installation.target.port || 22,
+        username: config.installation.target.username || "",
+        password: config.installation.target.password,
+        privateKeyPath: config.installation.target.privateKeyPath,
+      });
+      await ssh.connect();
     }
-    config.addon.environmentVariables[key] = value;
-    await configManager.save(config);
 
-    console.log(chalk.green(`\n✅ Environment variable '${key}' set successfully.\n`));
+    const serviceName = getServiceNameFromAddonId(addonId);
+    const serviceManager = new ServiceManager(serviceName, ssh);
 
-    if (options.restart) {
-      console.log(chalk.yellow("Restarting service..."));
-      await serviceManager.restart();
-      console.log(chalk.green("Service restarted.\n"));
-    } else {
-      console.log(chalk.yellow("⚠️  Service file updated. Restart the service for changes to take effect."));
-      console.log(chalk.gray("   Use --restart flag to restart automatically.\n"));
+    try {
+      // Get current environment variables
+      const currentEnvVars = await serviceManager.getEnvironmentVariables();
+
+      // Update the specific variable
+      currentEnvVars[key] = value;
+
+      // Update service file
+      await serviceManager.setEnvironmentVariables(currentEnvVars);
+
+      // Optionally save as override in config
+      if (!config.addon.environmentVariables) {
+        config.addon.environmentVariables = {};
+      }
+      config.addon.environmentVariables[key] = value;
+      await configManager.save(config);
+
+      console.log(chalk.green(`\n✅ Environment variable '${key}' set successfully.\n`));
+
+      if (options.restart) {
+        console.log(chalk.yellow("Restarting service..."));
+        await serviceManager.restart();
+        console.log(chalk.green("Service restarted.\n"));
+      } else {
+        console.log(chalk.yellow("⚠️  Service file updated. Restart the service for changes to take effect."));
+        console.log(chalk.gray("   Use --restart flag to restart automatically.\n"));
+      }
+    } finally {
+      // Cleanup SSH connection
+      if (ssh) {
+        await ssh.disconnect();
+      }
     }
   } catch (error) {
     logger.error("Failed to set environment variable", error);
@@ -292,33 +354,54 @@ export async function envUnsetCommand(key: string, options: EnvOptions): Promise
 
     const configManager = getConfigManagerForAddon(addonId);
     const config = await configManager.load();
-    const serviceName = getServiceNameFromAddonId(addonId);
-    const serviceManager = new ServiceManager(serviceName);
 
-    // Get current environment variables
-    const currentEnvVars = await serviceManager.getEnvironmentVariables();
-
-    // Remove the variable (will fall back to default/config)
-    delete currentEnvVars[key];
-
-    // Update service file
-    await serviceManager.setEnvironmentVariables(currentEnvVars);
-
-    // Remove override from config
-    if (config.addon.environmentVariables) {
-      config.addon.environmentVariables[key] = null;
-      await configManager.save(config);
+    // Setup SSH connection if needed
+    let ssh: SSHManager | undefined;
+    if (config.installation.type === "remote" && config.installation.target) {
+      ssh = new SSHManager({
+        host: config.installation.target.host || "",
+        port: config.installation.target.port || 22,
+        username: config.installation.target.username || "",
+        password: config.installation.target.password,
+        privateKeyPath: config.installation.target.privateKeyPath,
+      });
+      await ssh.connect();
     }
 
-    console.log(chalk.green(`\n✅ Environment variable '${key}' reset to default/config value.\n`));
+    const serviceName = getServiceNameFromAddonId(addonId);
+    const serviceManager = new ServiceManager(serviceName, ssh);
 
-    if (options.restart) {
-      console.log(chalk.yellow("Restarting service..."));
-      await serviceManager.restart();
-      console.log(chalk.green("Service restarted.\n"));
-    } else {
-      console.log(chalk.yellow("⚠️  Service file updated. Restart the service for changes to take effect."));
-      console.log(chalk.gray("   Use --restart flag to restart automatically.\n"));
+    try {
+      // Get current environment variables
+      const currentEnvVars = await serviceManager.getEnvironmentVariables();
+
+      // Remove the variable (will fall back to default/config)
+      delete currentEnvVars[key];
+
+      // Update service file
+      await serviceManager.setEnvironmentVariables(currentEnvVars);
+
+      // Remove override from config
+      if (config.addon.environmentVariables) {
+        config.addon.environmentVariables[key] = null;
+        await configManager.save(config);
+      }
+
+      console.log(chalk.green(`\n✅ Environment variable '${key}' reset to default/config value.\n`));
+
+      if (options.restart) {
+        console.log(chalk.yellow("Restarting service..."));
+        await serviceManager.restart();
+        console.log(chalk.green("Service restarted.\n"));
+      } else {
+        console.log(chalk.yellow("⚠️  Service file updated. Restart the service for changes to take effect."));
+        console.log(chalk.gray("   Use --restart flag to restart automatically.\n"));
+      }
+    } finally {
+      // Cleanup SSH connection
+      if (ssh) {
+        await ssh.disconnect();
+      }
     }
   } catch (error) {
     logger.error("Failed to unset environment variable", error);
@@ -352,26 +435,47 @@ export async function envResetCommand(options: EnvOptions): Promise<void> {
       return;
     }
 
-    const serviceName = getServiceNameFromAddonId(addonId);
-    const serviceManager = new ServiceManager(serviceName);
-
-    await serviceManager.resetEnvironmentVariables();
-
-    // Clear all overrides in config
     const configManager = getConfigManagerForAddon(addonId);
     const config = await configManager.load();
-    config.addon.environmentVariables = {};
-    await configManager.save(config);
 
-    console.log(chalk.green("\n✅ All environment variables reset to defaults.\n"));
+    // Setup SSH connection if needed
+    let ssh: SSHManager | undefined;
+    if (config.installation.type === "remote" && config.installation.target) {
+      ssh = new SSHManager({
+        host: config.installation.target.host || "",
+        port: config.installation.target.port || 22,
+        username: config.installation.target.username || "",
+        password: config.installation.target.password,
+        privateKeyPath: config.installation.target.privateKeyPath,
+      });
+      await ssh.connect();
+    }
 
-    if (options.restart) {
-      console.log(chalk.yellow("Restarting service..."));
-      await serviceManager.restart();
-      console.log(chalk.green("Service restarted.\n"));
-    } else {
-      console.log(chalk.yellow("⚠️  Service file updated. Restart the service for changes to take effect."));
-      console.log(chalk.gray("   Use --restart flag to restart automatically.\n"));
+    const serviceName = getServiceNameFromAddonId(addonId);
+    const serviceManager = new ServiceManager(serviceName, ssh);
+
+    try {
+      await serviceManager.resetEnvironmentVariables();
+
+      // Clear all overrides in config
+      config.addon.environmentVariables = {};
+      await configManager.save(config);
+
+      console.log(chalk.green("\n✅ All environment variables reset to defaults.\n"));
+
+      if (options.restart) {
+        console.log(chalk.yellow("Restarting service..."));
+        await serviceManager.restart();
+        console.log(chalk.green("Service restarted.\n"));
+      } else {
+        console.log(chalk.yellow("⚠️  Service file updated. Restart the service for changes to take effect."));
+        console.log(chalk.gray("   Use --restart flag to restart automatically.\n"));
+      }
+    } finally {
+      // Cleanup SSH connection
+      if (ssh) {
+        await ssh.disconnect();
+      }
     }
   } catch (error) {
     logger.error("Failed to reset environment variables", error);
@@ -393,26 +497,47 @@ export async function envSyncCommand(options: EnvOptions): Promise<void> {
 
     const configManager = getConfigManagerForAddon(addonId);
     const config = await configManager.load();
+
+    // Setup SSH connection if needed
+    let ssh: SSHManager | undefined;
+    if (config.installation.type === "remote" && config.installation.target) {
+      ssh = new SSHManager({
+        host: config.installation.target.host || "",
+        port: config.installation.target.port || 22,
+        username: config.installation.target.username || "",
+        password: config.installation.target.password,
+        privateKeyPath: config.installation.target.privateKeyPath,
+      });
+      await ssh.connect();
+    }
+
     const serviceName = getServiceNameFromAddonId(addonId);
-    const serviceManager = new ServiceManager(serviceName);
+    const serviceManager = new ServiceManager(serviceName, ssh);
 
-    console.log(chalk.yellow("\n🔄 Syncing service file with configuration...\n"));
+    try {
+      console.log(chalk.yellow("\n🔄 Syncing service file with configuration...\n"));
 
-    const result = await serviceManager.syncServiceFile(config, {
-      restartService: options.restart,
-    });
+      const result = await serviceManager.syncServiceFile(config, {
+        restartService: options.restart,
+      });
 
-    if (result.updated) {
-      console.log(chalk.green("✅ Service file updated successfully.\n"));
-      if (result.changes && result.changes.length > 0) {
-        console.log(chalk.cyan("Changes made:"));
-        result.changes.forEach((change) => {
-          console.log(chalk.gray(`  - ${change}`));
-        });
-        console.log();
+      if (result.updated) {
+        console.log(chalk.green("✅ Service file updated successfully.\n"));
+        if (result.changes && result.changes.length > 0) {
+          console.log(chalk.cyan("Changes made:"));
+          result.changes.forEach((change) => {
+            console.log(chalk.gray(`  - ${change}`));
+          });
+          console.log();
+        }
+      } else {
+        console.log(chalk.green("✅ Service file is already up to date.\n"));
       }
-    } else {
-      console.log(chalk.green("✅ Service file is already up to date.\n"));
+    } finally {
+      // Cleanup SSH connection
+      if (ssh) {
+        await ssh.disconnect();
+      }
     }
   } catch (error) {
     logger.error("Failed to sync service file", error);
@@ -463,35 +588,56 @@ export async function envGenerateCommand(key: string, options: EnvOptions): Prom
 
     const configManager = getConfigManagerForAddon(addonId);
     const config = await configManager.load();
-    const serviceName = getServiceNameFromAddonId(addonId);
-    const serviceManager = new ServiceManager(serviceName);
 
-    // Get current environment variables
-    const currentEnvVars = await serviceManager.getEnvironmentVariables();
-
-    // Set the generated value
-    currentEnvVars[key] = generatedValue;
-
-    // Update service file
-    await serviceManager.setEnvironmentVariables(currentEnvVars);
-
-    // Save as override in config
-    if (!config.addon.environmentVariables) {
-      config.addon.environmentVariables = {};
+    // Setup SSH connection if needed
+    let ssh: SSHManager | undefined;
+    if (config.installation.type === "remote" && config.installation.target) {
+      ssh = new SSHManager({
+        host: config.installation.target.host || "",
+        port: config.installation.target.port || 22,
+        username: config.installation.target.username || "",
+        password: config.installation.target.password,
+        privateKeyPath: config.installation.target.privateKeyPath,
+      });
+      await ssh.connect();
     }
-    config.addon.environmentVariables[key] = generatedValue;
-    await configManager.save(config);
 
-    console.log(chalk.green(`\n✅ Generated and set value for '${key}'.\n`));
-    console.log(chalk.cyan(`Generated value: ${maskValue(key, generatedValue)}\n`));
+    const serviceName = getServiceNameFromAddonId(addonId);
+    const serviceManager = new ServiceManager(serviceName, ssh);
 
-    if (options.restart) {
-      console.log(chalk.yellow("Restarting service..."));
-      await serviceManager.restart();
-      console.log(chalk.green("Service restarted.\n"));
-    } else {
-      console.log(chalk.yellow("⚠️  Service file updated. Restart the service for changes to take effect."));
-      console.log(chalk.gray("   Use --restart flag to restart automatically.\n"));
+    try {
+      // Get current environment variables
+      const currentEnvVars = await serviceManager.getEnvironmentVariables();
+
+      // Set the generated value
+      currentEnvVars[key] = generatedValue;
+
+      // Update service file
+      await serviceManager.setEnvironmentVariables(currentEnvVars);
+
+      // Save as override in config
+      if (!config.addon.environmentVariables) {
+        config.addon.environmentVariables = {};
+      }
+      config.addon.environmentVariables[key] = generatedValue;
+      await configManager.save(config);
+
+      console.log(chalk.green(`\n✅ Generated and set value for '${key}'.\n`));
+      console.log(chalk.cyan(`Generated value: ${maskValue(key, generatedValue)}\n`));
+
+      if (options.restart) {
+        console.log(chalk.yellow("Restarting service..."));
+        await serviceManager.restart();
+        console.log(chalk.green("Service restarted.\n"));
+      } else {
+        console.log(chalk.yellow("⚠️  Service file updated. Restart the service for changes to take effect."));
+        console.log(chalk.gray("   Use --restart flag to restart automatically.\n"));
+      }
+    } finally {
+      // Cleanup SSH connection
+      if (ssh) {
+        await ssh.disconnect();
+      }
     }
   } catch (error) {
     logger.error("Failed to generate environment variable", error);
@@ -503,7 +649,12 @@ export async function envGenerateCommand(key: string, options: EnvOptions): Prom
 /**
  * Main env command handler
  */
-export async function envCommand(action: string, key?: string, value?: string, options: EnvOptions = {}): Promise<void> {
+export async function envCommand(
+  action: string,
+  key?: string,
+  value?: string,
+  options: EnvOptions = {}
+): Promise<void> {
   switch (action) {
     case "list":
       await envListCommand(options);

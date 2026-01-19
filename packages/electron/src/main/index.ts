@@ -483,15 +483,154 @@ function setupIPC() {
   // Installation
   ipcMain.handle("install:start", async (_event, options) => {
     try {
-      const installManager = new InstallationManager({
-        ...options,
-        progressCallback: (progress) => {
-          mainWindow?.webContents.send("install:progress", progress);
-        },
+      // Generate addonId if not provided (similar to addon:create)
+      if (!options.config.addonId) {
+        const { AddonRegistryManager, ConfigManager, generateServiceName } = await import("@stremio-addon-manager/core");
+        const registryManager = new AddonRegistryManager();
+        await registryManager.initialize();
+        
+        // Generate addon ID from name or domain
+        let addonId: string | undefined;
+        if (options.config.addon?.name) {
+          addonId = options.config.addon.name
+            .toLowerCase()
+            .trim()
+            .replace(/[^\w\s-]/g, "")
+            .replace(/[\s_-]+/g, "-")
+            .replace(/^-+|-+$/g, "");
+        } else if (options.config.addon?.domain) {
+          // Fallback to domain if name not available
+          addonId = options.config.addon.domain
+            .toLowerCase()
+            .replace(/\./g, "-")
+            .replace(/[^\w-]/g, "")
+            .replace(/-+/g, "-")
+            .replace(/^-+|-+$/g, "");
+        }
+
+        if (!addonId) {
+          logger.error("Cannot generate addonId: missing both addon.name and addon.domain", {
+            hasName: !!options.config.addon?.name,
+            hasDomain: !!options.config.addon?.domain,
+          });
+          return { success: false, error: "Could not generate valid addon ID: missing addon name or domain" };
+        }
+
+        // Ensure unique ID
+        let finalAddonId = addonId;
+        let counter = 1;
+        const registry = registryManager.getRegistry();
+        await registry.load();
+        while (registry.exists(finalAddonId)) {
+          finalAddonId = `${addonId}-${counter}`;
+          counter++;
+        }
+
+        // Set addonId and serviceName in config
+        options.config.addonId = finalAddonId;
+        options.config.serviceName = generateServiceName(finalAddonId);
+        
+        // Update paths to be addon-specific
+        options.config.paths = {
+          ...options.config.paths,
+          addonDirectory: `/opt/stremio-addon-${finalAddonId}`,
+          nginxConfig: `/etc/nginx/sites-available/stremio-addon-${finalAddonId}`,
+          serviceFile: `/etc/systemd/system/${options.config.serviceName}.service`,
+          logs: `/var/log/stremio-addon-${finalAddonId}`,
+          backups: `/var/backups/stremio-addon-${finalAddonId}`,
+        };
+
+        // Save config file (required for registry registration)
+        const configManager = new ConfigManager(finalAddonId);
+        await configManager.save(options.config);
+        logger.info("Config saved for addon", { addonId: finalAddonId });
+      } else {
+        logger.info("Using existing addonId", { addonId: options.config.addonId });
+      }
+
+      // CRITICAL: Verify addonId is set before creating InstallationManager
+      if (!options.config.addonId) {
+        logger.error("CRITICAL: addonId is not set in options.config before creating InstallationManager", {
+          hasAddonName: !!options.config.addon?.name,
+          hasAddonDomain: !!options.config.addon?.domain,
+          configKeys: Object.keys(options.config),
+        });
+        return { success: false, error: "addonId must be set before installation. This is a bug." };
+      }
+
+      logger.info("Creating InstallationManager with addonId", { 
+        addonId: options.config.addonId,
+        serviceName: options.config.serviceName,
+        domain: options.config.addon?.domain,
       });
 
-      const result = await installManager.install();
-      return { success: true, data: result };
+      // Set Electron app path as environment variable for bundled resource resolution
+      // This helps InstallationManager find bundled addon-server in resources/
+      const electronAppPath = app.getAppPath();
+      const electronResourcesPath = typeof (process as any).resourcesPath !== 'undefined' 
+        ? (process as any).resourcesPath 
+        : path.join(electronAppPath, 'resources');
+      
+      // Store original values
+      const originalAppPath = process.env.ELECTRON_APP_PATH;
+      const originalResourcesPath = process.env.ELECTRON_RESOURCES_PATH;
+      
+      // Set environment variables for path resolution
+      process.env.ELECTRON_APP_PATH = electronAppPath;
+      process.env.ELECTRON_RESOURCES_PATH = electronResourcesPath;
+      
+      try {
+        // Ensure config object reference is preserved (not cloned)
+        // This is critical - addonId must be in the config object
+        const installOptions = {
+          ...options,
+          config: options.config, // Explicitly preserve config reference
+          progressCallback: (progress) => {
+            mainWindow?.webContents.send("install:progress", progress);
+          },
+        };
+
+        // Final verification before creating InstallationManager
+        if (!installOptions.config.addonId) {
+          logger.error("CRITICAL: addonId lost during options preparation", {
+            originalAddonId: options.config.addonId,
+            installOptionsAddonId: installOptions.config.addonId,
+            sameConfigRef: installOptions.config === options.config,
+          });
+          return { success: false, error: "addonId was lost during options preparation. This is a bug." };
+        }
+
+        logger.info("Creating InstallationManager", {
+          addonId: installOptions.config.addonId,
+          configHasAddonId: !!installOptions.config.addonId,
+        });
+
+        const installManager = new InstallationManager(installOptions);
+
+        const result = await installManager.install();
+        
+        // Save config again after installation (in case it was updated during installation)
+        if (options.config.addonId) {
+          const { ConfigManager } = await import("@stremio-addon-manager/core");
+          const configManager = new ConfigManager(options.config.addonId);
+          await configManager.save(result.config || options.config);
+          logger.info("Config saved after installation", { addonId: options.config.addonId });
+        }
+        
+        return { success: true, data: result };
+      } finally {
+        // Restore original values
+        if (originalAppPath !== undefined) {
+          process.env.ELECTRON_APP_PATH = originalAppPath;
+        } else {
+          delete process.env.ELECTRON_APP_PATH;
+        }
+        if (originalResourcesPath !== undefined) {
+          process.env.ELECTRON_RESOURCES_PATH = originalResourcesPath;
+        } else {
+          delete process.env.ELECTRON_RESOURCES_PATH;
+        }
+      }
     } catch (error) {
       logger.error("Installation failed", error);
       return { success: false, error: (error as Error).message };
@@ -793,7 +932,15 @@ function setupIPC() {
       const { EnvVarManager } = await import("@stremio-addon-manager/core");
       const metadata = EnvVarManager.getAllEnvVarMetadata();
       const defaults = EnvVarManager.getDefaultEnvVars();
-      return { success: true, data: { metadata, defaults } };
+      
+      // Remove validation functions (can't be cloned for IPC)
+      const serializableMetadata: Record<string, any> = {};
+      for (const [key, value] of Object.entries(metadata)) {
+        const { validation, ...rest } = value;
+        serializableMetadata[key] = rest;
+      }
+      
+      return { success: true, data: { metadata: serializableMetadata, defaults } };
     } catch (error) {
       logger.error("Env getMetadata failed", error);
       return { success: false, error: (error as Error).message };

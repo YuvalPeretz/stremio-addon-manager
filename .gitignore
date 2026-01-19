@@ -17,6 +17,8 @@ build/
 packages/electron/dist/
 packages/electron/release/
 packages/electron/.vite/
+packages/electron/resources/
+packages/cli/resources/
 
 # Logs
 *.log

@@ -47,9 +47,13 @@ function EnvironmentVariables() {
   const [config, setConfig] = useState<any>(null);
 
   useEffect(() => {
-    loadEnvironmentVariables();
-    loadMetadata();
-    loadConfig();
+    // Load config first, then metadata and env vars (which may depend on config for SSH)
+    async function initialize() {
+      await loadConfig();
+      await loadMetadata();
+      await loadEnvironmentVariables();
+    }
+    initialize();
   }, [selectedAddonId]);
 
   async function loadConfig() {
@@ -77,6 +81,9 @@ function EnvironmentVariables() {
 
   // Get SSH config from addon config if available
   function getSSHConfig(): any {
+    if (!config) {
+      return undefined;
+    }
     const target = config?.installation?.target;
     if (target && (target.host || target.privateKeyPath)) {
       // Construct SSH config from target config
@@ -94,6 +101,10 @@ function EnvironmentVariables() {
   async function loadEnvironmentVariables() {
     setLoading(true);
     try {
+      // Ensure config is loaded before getting SSH config
+      if (!config && selectedAddonId) {
+        await loadConfig();
+      }
       const ssh = getSSHConfig();
       const result = await window.electron.env.list(ssh, selectedAddonId || undefined);
       if (result.success && result.data) {
@@ -420,8 +431,9 @@ function EnvironmentVariables() {
             </Tooltip>
           );
         }
-        const displayValue = value || (record.default ? `(default: ${record.default})` : "(not set)");
-        const maskedValue = record.metadata?.sensitive ? maskValue(record.key, value) : displayValue;
+        // Show empty string as "(empty)" instead of "(not set)" to distinguish from undefined
+        const displayValue = value === "" ? "(empty)" : (value || (record.default ? `(default: ${record.default})` : "(not set)"));
+        const maskedValue = record.metadata?.sensitive && value ? maskValue(record.key, value) : displayValue;
 
         const tooltipContent = record.metadata
           ? `Current value: ${maskedValue}\n${record.metadata.description}${
