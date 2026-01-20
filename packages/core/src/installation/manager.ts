@@ -186,25 +186,60 @@ export class InstallationManager {
         await this.setupNginx();
       });
 
-      // Step 9.5: Configure DuckDNS BEFORE SSL setup (critical for DNS-based validation)
+      // Step 9.5: Update DuckDNS BEFORE SSL setup (critical for DNS-based validation)
       // DuckDNS must be updated with the server IP before Let's Encrypt tries to verify the domain
+      // This happens regardless of the duckdnsUpdater feature flag (which only controls cron job)
       const isDuckDNS = this.options.config.addon.domain.includes('duckdns.org');
-      if (isDuckDNS && this.options.config.features.duckdnsUpdater) {
-        await this.executeStep(InstallationStep.CONFIGURE_DUCKDNS, async () => {
-          await this.configureDuckDNS();
+      const hasDuckDNSToken = !!this.options.config.secrets.duckdnsToken;
+      
+      if (isDuckDNS && hasDuckDNSToken && (this.options.config.features.ssl && !this.options.skipSSL)) {
+        // Update DuckDNS immediately before SSL setup
+        // This is NOT wrapped in executeStep because it's a critical prerequisite for SSL
+        logger.info('Updating DuckDNS IP before SSL setup (required for certificate validation)', {
+          domain: this.options.config.addon.domain,
+        });
+        
+        try {
+          const domain = this.options.config.addon.domain.replace('.duckdns.org', '');
+          const duckdnsToken = this.options.config.secrets.duckdnsToken;
           
-          // Wait for DNS propagation after updating DuckDNS
-          // This is critical for SSL certificate validation
-          if (this.options.config.features.ssl && !this.options.skipSSL) {
+          // Trigger immediate DuckDNS update
+          const updateResult = await this.execCommand(
+            `curl -k "https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}&ip=" 2>&1`
+          );
+          
+          if (updateResult.stdout.includes('OK')) {
+            logger.info('DuckDNS IP updated successfully before SSL setup', { 
+              domain: `${domain}.duckdns.org`,
+              response: updateResult.stdout.trim(),
+            });
+            
+            // Wait for DNS propagation after updating DuckDNS
+            // This is critical for SSL certificate validation
             logger.info('Waiting for DNS propagation after DuckDNS update (60 seconds)...');
             logger.info('This wait ensures Let\'s Encrypt can resolve the domain for SSL certificate validation');
             await new Promise(resolve => setTimeout(resolve, 60000)); // 60 seconds
             logger.info('DNS propagation wait complete, proceeding with SSL setup');
+          } else if (updateResult.stdout.includes('KO')) {
+            logger.error('DuckDNS IP update failed before SSL setup', {
+              domain,
+              response: updateResult.stdout.trim(),
+            });
+            throw new Error(`DuckDNS update failed: Invalid token or domain name. SSL setup cannot proceed without valid DNS. Please verify your DuckDNS token and domain name.`);
+          } else {
+            logger.warn('DuckDNS update response unclear, proceeding with SSL setup anyway', {
+              response: updateResult.stdout.trim(),
+              stderr: updateResult.stderr.trim(),
+            });
           }
-        });
-      } else if (isDuckDNS && !this.options.config.features.duckdnsUpdater) {
-        logger.warn('Domain is DuckDNS but updater is disabled - SSL may fail if DNS is not already configured', {
+        } catch (error) {
+          logger.error('Failed to update DuckDNS before SSL setup', error);
+          throw new Error(`Failed to update DuckDNS: ${(error as Error).message}. SSL setup cannot proceed.`);
+        }
+      } else if (isDuckDNS && !hasDuckDNSToken) {
+        logger.warn('Domain is DuckDNS but no token provided - SSL may fail if DNS is not already configured', {
           domain: this.options.config.addon.domain,
+          hasToken: hasDuckDNSToken,
         });
       }
 
@@ -227,16 +262,21 @@ export class InstallationManager {
         await this.startService();
       });
 
-      // Step 13: Configure/Re-configure DuckDNS updater (if not already done)
-      // This ensures the cron job keeps the IP updated
-      if (this.options.config.features.duckdnsUpdater && !isDuckDNS) {
+      // Step 13: Configure DuckDNS cron job (if enabled)
+      // This sets up periodic updates to keep the IP current
+      // Note: The initial DuckDNS update was already done before SSL setup (if needed)
+      if (this.options.config.features.duckdnsUpdater && isDuckDNS && hasDuckDNSToken) {
         await this.executeStep(InstallationStep.CONFIGURE_DUCKDNS, async () => {
-          await this.configureDuckDNS();
+          // Only set up the cron job, since immediate update was already done before SSL
+          await this.configureDuckDNSCronJob();
         });
       } else if (!this.options.config.features.duckdnsUpdater) {
-        this.skipStep(InstallationStep.CONFIGURE_DUCKDNS, 'DuckDNS updater disabled');
+        this.skipStep(InstallationStep.CONFIGURE_DUCKDNS, 'DuckDNS periodic updater disabled (initial update may have been done before SSL)');
+      } else if (!isDuckDNS) {
+        this.skipStep(InstallationStep.CONFIGURE_DUCKDNS, 'Not a DuckDNS domain');
+      } else if (!hasDuckDNSToken) {
+        this.skipStep(InstallationStep.CONFIGURE_DUCKDNS, 'No DuckDNS token provided');
       }
-      // If DuckDNS was already configured before SSL, we skip it here
 
       // Step 14: Create initial backup
       if (this.options.config.features.backups.enabled) {
@@ -2793,42 +2833,18 @@ WantedBy=multi-user.target
   }
 
   /**
-   * Configure DuckDNS updater
+   * Configure DuckDNS cron job only (assumes immediate update was already done)
    */
-  private async configureDuckDNS(): Promise<void> {
-    logger.info('Configuring DuckDNS updater');
+  private async configureDuckDNSCronJob(): Promise<void> {
+    logger.info('Setting up DuckDNS cron job for periodic IP updates');
 
     const duckdnsToken = this.options.config.secrets.duckdnsToken;
     if (!duckdnsToken) {
-      logger.warn('DuckDNS token not provided, skipping updater setup');
+      logger.warn('DuckDNS token not provided, skipping cron job setup');
       return;
     }
 
     const domain = this.options.config.addon.domain.replace('.duckdns.org', '');
-
-    // First, trigger an immediate DuckDNS update to register the server IP
-    logger.info('Triggering immediate DuckDNS IP update', { domain });
-    const updateResult = await this.execCommand(
-      `curl -k "https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}&ip=" 2>&1`
-    );
-    
-    if (updateResult.stdout.includes('OK')) {
-      logger.info('DuckDNS IP update successful', { 
-        domain: `${domain}.duckdns.org`,
-        response: updateResult.stdout.trim(),
-      });
-    } else if (updateResult.stdout.includes('KO')) {
-      logger.error('DuckDNS IP update failed - invalid token or domain', {
-        domain,
-        response: updateResult.stdout.trim(),
-      });
-      throw new Error(`DuckDNS update failed: Invalid token or domain name. Please verify your DuckDNS token and domain name.`);
-    } else {
-      logger.warn('DuckDNS update response unclear', {
-        response: updateResult.stdout.trim(),
-        stderr: updateResult.stderr.trim(),
-      });
-    }
 
     // Create update script for cron job
     const updateScript = `#!/bin/bash
@@ -2841,7 +2857,7 @@ echo url="https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}
     // Add to crontab (run every 5 minutes)
     await this.execCommand('(crontab -l 2>/dev/null; echo "*/5 * * * * ~/duckdns.sh >/dev/null 2>&1") | crontab -');
 
-    logger.info('DuckDNS updater configured with cron job');
+    logger.info('DuckDNS cron job configured (runs every 5 minutes)');
   }
 
   /**
