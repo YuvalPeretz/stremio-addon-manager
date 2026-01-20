@@ -186,6 +186,28 @@ export class InstallationManager {
         await this.setupNginx();
       });
 
+      // Step 9.5: Configure DuckDNS BEFORE SSL setup (critical for DNS-based validation)
+      // DuckDNS must be updated with the server IP before Let's Encrypt tries to verify the domain
+      const isDuckDNS = this.options.config.addon.domain.includes('duckdns.org');
+      if (isDuckDNS && this.options.config.features.duckdnsUpdater) {
+        await this.executeStep(InstallationStep.CONFIGURE_DUCKDNS, async () => {
+          await this.configureDuckDNS();
+          
+          // Wait for DNS propagation after updating DuckDNS
+          // This is critical for SSL certificate validation
+          if (this.options.config.features.ssl && !this.options.skipSSL) {
+            logger.info('Waiting for DNS propagation after DuckDNS update (60 seconds)...');
+            logger.info('This wait ensures Let\'s Encrypt can resolve the domain for SSL certificate validation');
+            await new Promise(resolve => setTimeout(resolve, 60000)); // 60 seconds
+            logger.info('DNS propagation wait complete, proceeding with SSL setup');
+          }
+        });
+      } else if (isDuckDNS && !this.options.config.features.duckdnsUpdater) {
+        logger.warn('Domain is DuckDNS but updater is disabled - SSL may fail if DNS is not already configured', {
+          domain: this.options.config.addon.domain,
+        });
+      }
+
       // Step 10: Setup SSL
       if (this.options.config.features.ssl && !this.options.skipSSL) {
         await this.executeStep(InstallationStep.SETUP_SSL, async () => {
@@ -205,14 +227,16 @@ export class InstallationManager {
         await this.startService();
       });
 
-      // Step 13: Configure DuckDNS updater (if enabled)
-      if (this.options.config.features.duckdnsUpdater) {
+      // Step 13: Configure/Re-configure DuckDNS updater (if not already done)
+      // This ensures the cron job keeps the IP updated
+      if (this.options.config.features.duckdnsUpdater && !isDuckDNS) {
         await this.executeStep(InstallationStep.CONFIGURE_DUCKDNS, async () => {
           await this.configureDuckDNS();
         });
-      } else {
+      } else if (!this.options.config.features.duckdnsUpdater) {
         this.skipStep(InstallationStep.CONFIGURE_DUCKDNS, 'DuckDNS updater disabled');
       }
+      // If DuckDNS was already configured before SSL, we skip it here
 
       // Step 14: Create initial backup
       if (this.options.config.features.backups.enabled) {
@@ -2399,17 +2423,43 @@ server {
     
     // Pre-check DNS resolution to catch DNS issues early
     logger.info('Checking DNS resolution for domain', { domain });
-    const dnsCheck = await this.execCommand(`dig ${domain} +short 2>&1 || nslookup ${domain} 2>&1 | grep -A1 "Name:" || echo "DNS_CHECK_FAILED"`);
-    if (dnsCheck.stdout.includes('DNS_CHECK_FAILED') || (!dnsCheck.stdout.trim() && dnsCheck.code !== 0)) {
-      logger.warn('DNS resolution check failed or returned no results', {
-        domain,
-        dnsOutput: dnsCheck.stdout,
-        dnsStderr: dnsCheck.stderr,
-      });
-      // Don't fail here - certbot will provide better error messages, but log a warning
+    
+    // Try dig first, then nslookup as fallback
+    let dnsCheck = await this.execCommand(`command -v dig >/dev/null 2>&1 && dig ${domain} +short 2>&1`);
+    
+    if (dnsCheck.code !== 0 || !dnsCheck.stdout.trim()) {
+      // dig failed or not installed, try nslookup
+      logger.info('dig command not available or failed, trying nslookup');
+      dnsCheck = await this.execCommand(`nslookup ${domain} 2>&1`);
+      
+      if (dnsCheck.code === 0 && dnsCheck.stdout) {
+        // Parse nslookup output
+        const addressMatch = dnsCheck.stdout.match(/Address:\s*(\d+\.\d+\.\d+\.\d+)/g);
+        if (addressMatch && addressMatch.length > 0) {
+          // Extract IPs (skip the first one which is usually the DNS server)
+          const ips = addressMatch.slice(1).map(m => m.replace('Address:', '').trim());
+          logger.info('DNS resolution check passed (nslookup)', {
+            domain,
+            resolvedIPs: ips,
+          });
+        } else {
+          logger.warn('DNS resolution check: domain found but no IP addresses', {
+            domain,
+            nslookupOutput: dnsCheck.stdout,
+          });
+        }
+      } else {
+        logger.warn('DNS resolution check failed with both dig and nslookup', {
+          domain,
+          nslookupOutput: dnsCheck.stdout,
+          nslookupStderr: dnsCheck.stderr,
+        });
+        // Don't fail here - certbot will provide better error messages
+      }
     } else {
-      const resolvedIPs = dnsCheck.stdout.trim().split('\n').filter(line => line.trim() && !line.includes('DNS_CHECK_FAILED'));
-      logger.info('DNS resolution check passed', {
+      // dig succeeded
+      const resolvedIPs = dnsCheck.stdout.trim().split('\n').filter(line => line.trim());
+      logger.info('DNS resolution check passed (dig)', {
         domain,
         resolvedIPs: resolvedIPs.length > 0 ? resolvedIPs : ['No IPs found'],
       });
@@ -2756,7 +2806,31 @@ WantedBy=multi-user.target
 
     const domain = this.options.config.addon.domain.replace('.duckdns.org', '');
 
-    // Create update script
+    // First, trigger an immediate DuckDNS update to register the server IP
+    logger.info('Triggering immediate DuckDNS IP update', { domain });
+    const updateResult = await this.execCommand(
+      `curl -k "https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}&ip=" 2>&1`
+    );
+    
+    if (updateResult.stdout.includes('OK')) {
+      logger.info('DuckDNS IP update successful', { 
+        domain: `${domain}.duckdns.org`,
+        response: updateResult.stdout.trim(),
+      });
+    } else if (updateResult.stdout.includes('KO')) {
+      logger.error('DuckDNS IP update failed - invalid token or domain', {
+        domain,
+        response: updateResult.stdout.trim(),
+      });
+      throw new Error(`DuckDNS update failed: Invalid token or domain name. Please verify your DuckDNS token and domain name.`);
+    } else {
+      logger.warn('DuckDNS update response unclear', {
+        response: updateResult.stdout.trim(),
+        stderr: updateResult.stderr.trim(),
+      });
+    }
+
+    // Create update script for cron job
     const updateScript = `#!/bin/bash
 echo url="https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}&ip=" | curl -k -o ~/duckdns.log -K -
 `;
@@ -2767,7 +2841,7 @@ echo url="https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}
     // Add to crontab (run every 5 minutes)
     await this.execCommand('(crontab -l 2>/dev/null; echo "*/5 * * * * ~/duckdns.sh >/dev/null 2>&1") | crontab -');
 
-    logger.info('DuckDNS updater configured');
+    logger.info('DuckDNS updater configured with cron job');
   }
 
   /**
