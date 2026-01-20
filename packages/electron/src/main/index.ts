@@ -26,6 +26,7 @@ import {
   ServerDetector,
   ServerConnection,
   ConnectionProfileManager,
+  type InstallationProgress,
 } from "@stremio-addon-manager/core";
 
 let mainWindow: BrowserWindow | null = null;
@@ -585,7 +586,7 @@ function setupIPC() {
         const installOptions = {
           ...options,
           config: options.config, // Explicitly preserve config reference
-          progressCallback: (progress) => {
+          progressCallback: (progress: InstallationProgress) => {
             mainWindow?.webContents.send("install:progress", progress);
           },
         };
