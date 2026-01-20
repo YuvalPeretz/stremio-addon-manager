@@ -9,6 +9,7 @@ export type {
   InstallationProgress,
   PrerequisiteCheck,
   ProgressCallback,
+  CertificateInfo,
 } from "./types.js";
 export { InstallationStep, StepStatus } from "./types.js";
 

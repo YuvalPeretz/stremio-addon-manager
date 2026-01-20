@@ -21,7 +21,10 @@ function startServer(): void {
   console.log(`  - Environment: ${config.nodeEnv}`);
   console.log(`  - Torrent Limit: ${config.torrentLimit} (from TORRENT_LIMIT env var)`);
   console.log(`  - Authentication: ${config.authEnabled ? "Enabled 🔒" : "Disabled ⚠️"}`);
-  console.log(`  - Real-Debrid Token: ${config.rdApiToken !== "YOUR_REAL_DEBRID_TOKEN_HERE" ? "Configured ✓" : "Missing ✗"}`);
+  const hasValidToken = config.rdApiToken && 
+                       config.rdApiToken.trim().length > 0 && 
+                       config.rdApiToken !== "YOUR_REAL_DEBRID_TOKEN_HERE";
+  console.log(`  - Real-Debrid Token: ${hasValidToken ? "Configured ✓" : "Missing ✗"}`);
   console.log("\nCache Configuration:");
   console.log(`  - Metadata: ${config.cacheTtl.metadata}s (24h)`);
   console.log(`  - Torrent Search: ${config.cacheTtl.torrentSearch}s (6h)`);

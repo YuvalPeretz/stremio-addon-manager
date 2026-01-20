@@ -45,7 +45,13 @@ function ReviewStep({ installationType, sshConfig, addonConfig, accessMethod, fe
           logs: "/var/log/stremio-addon",
           backups: "/var/backups/stremio-addon",
         },
-        secrets: {},
+        secrets: {
+          // Trim tokens and only include non-empty ones
+          ...(addonConfig.realDebridToken?.trim() ? { realDebridToken: addonConfig.realDebridToken.trim() } : {}),
+          ...(addonConfig.alldebridToken?.trim() ? { alldebridToken: addonConfig.alldebridToken.trim() } : {}),
+          ...(addonConfig.premiumizeToken?.trim() ? { premiumizeToken: addonConfig.premiumizeToken.trim() } : {}),
+          ...(addonConfig.torboxToken?.trim() ? { torboxToken: addonConfig.torboxToken.trim() } : {}),
+        },
       },
     };
 
@@ -129,6 +135,14 @@ function ReviewStep({ installationType, sshConfig, addonConfig, accessMethod, fe
           <Descriptions.Item label="Provider">
             <Tag>{addonConfig?.provider?.toUpperCase()}</Tag>
           </Descriptions.Item>
+          {(addonConfig?.realDebridToken || addonConfig?.alldebridToken || addonConfig?.premiumizeToken || addonConfig?.torboxToken) && (
+            <Descriptions.Item label="API Token">
+              {addonConfig?.realDebridToken && "✓ Real-Debrid token set"}
+              {addonConfig?.alldebridToken && "✓ AllDebrid token set"}
+              {addonConfig?.premiumizeToken && "✓ Premiumize token set"}
+              {addonConfig?.torboxToken && "✓ TorBox token set"}
+            </Descriptions.Item>
+          )}
           <Descriptions.Item label="Torrent Limit">{addonConfig?.torrentLimit}</Descriptions.Item>
           <Descriptions.Item label="Port">{addonConfig?.port}</Descriptions.Item>
         </Descriptions>
@@ -150,6 +164,11 @@ function ReviewStep({ installationType, sshConfig, addonConfig, accessMethod, fe
           {features?.duckdnsUpdater && <Tag color="success">DuckDNS Updater</Tag>}
           {features?.autoStart && <Tag color="success">Auto-start</Tag>}
         </Flex>
+        {features?.ssl && features?.sslEmail && (
+          <Descriptions column={1} size="small" style={{ marginTop: 16 }}>
+            <Descriptions.Item label="SSL Email">{features.sslEmail}</Descriptions.Item>
+          </Descriptions>
+        )}
       </Card>
 
       <Flex justify="space-between">

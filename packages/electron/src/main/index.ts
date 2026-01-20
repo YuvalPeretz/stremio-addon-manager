@@ -590,19 +590,33 @@ function setupIPC() {
           },
         };
 
+        // CRITICAL: Ensure addonId is set - if it was set in options.config, preserve it
+        // This handles cases where the reference might have been lost
+        if (options.config.addonId && !installOptions.config.addonId) {
+          logger.warn("addonId was lost during options preparation, restoring from original", {
+            originalAddonId: options.config.addonId,
+          });
+          installOptions.config.addonId = options.config.addonId;
+          installOptions.config.serviceName = options.config.serviceName;
+        }
+
         // Final verification before creating InstallationManager
         if (!installOptions.config.addonId) {
-          logger.error("CRITICAL: addonId lost during options preparation", {
-            originalAddonId: options.config.addonId,
-            installOptionsAddonId: installOptions.config.addonId,
+          logger.error("CRITICAL: addonId is not set in options.config before creating InstallationManager", {
+            hasAddonName: !!options.config.addon?.name,
+            hasAddonDomain: !!options.config.addon?.domain,
+            configKeys: Object.keys(options.config),
+            installOptionsConfigKeys: Object.keys(installOptions.config),
             sameConfigRef: installOptions.config === options.config,
           });
-          return { success: false, error: "addonId was lost during options preparation. This is a bug." };
+          return { success: false, error: "addonId must be set before installation. This is a bug." };
         }
 
         logger.info("Creating InstallationManager", {
           addonId: installOptions.config.addonId,
+          serviceName: installOptions.config.serviceName,
           configHasAddonId: !!installOptions.config.addonId,
+          sameConfigRef: installOptions.config === options.config,
         });
 
         const installManager = new InstallationManager(installOptions);

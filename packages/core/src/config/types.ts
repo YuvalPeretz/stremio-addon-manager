@@ -105,6 +105,7 @@ export interface FeatureConfig {
     retention: number;
   };
   ssl: boolean;
+  sslEmail?: string; // Email address for Let's Encrypt certificate registration
   duckdnsUpdater: boolean;
   autoStart: boolean;
 }

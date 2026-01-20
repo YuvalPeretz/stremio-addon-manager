@@ -70,7 +70,9 @@ function parseEnvInt(envVar: string | undefined, defaultValue: number, min: numb
  * Load configuration from environment variables
  */
 export function loadConfig(): ServerConfig {
-  const rdApiToken = process.env.RD_API_TOKEN || "YOUR_REAL_DEBRID_TOKEN_HERE";
+  // Handle empty strings - treat them as missing tokens
+  const rdApiTokenEnv = process.env.RD_API_TOKEN?.trim() || "";
+  const rdApiToken = rdApiTokenEnv && rdApiTokenEnv.length > 0 ? rdApiTokenEnv : "YOUR_REAL_DEBRID_TOKEN_HERE";
   const addonPassword = process.env.ADDON_PASSWORD || "YOUR_ADDON_PASSWORD_HERE";
   const authEnabled = Boolean(addonPassword && addonPassword !== "YOUR_ADDON_PASSWORD_HERE");
 
@@ -130,7 +132,10 @@ export function loadConfig(): ServerConfig {
   console.log(`  - Availability Check Limit: ${config.availabilityCheckLimit}`);
   console.log(`  - Max Streams: ${config.maxStreams}`);
   console.log(`  - Max Concurrency: ${config.maxConcurrency}`);
-  console.log(`  - Real-Debrid Token: ${config.rdApiToken !== "YOUR_REAL_DEBRID_TOKEN_HERE" ? "Configured ✓" : "Missing ✗"}`);
+  const hasValidToken = config.rdApiToken && 
+                       config.rdApiToken.trim().length > 0 && 
+                       config.rdApiToken !== "YOUR_REAL_DEBRID_TOKEN_HERE";
+  console.log(`  - Real-Debrid Token: ${hasValidToken ? "Configured ✓" : "Missing ✗"}`);
   console.log(`  - Authentication: ${config.authEnabled ? "Enabled 🔒" : "Disabled ⚠️"}\n`);
 
   return config;

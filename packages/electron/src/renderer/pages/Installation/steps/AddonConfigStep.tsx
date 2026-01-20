@@ -4,6 +4,7 @@
  */
 
 import { Form, Input, InputNumber, Select, Button, Flex, Typography } from "antd";
+import { useState } from "react";
 
 const { Title, Text } = Typography;
 
@@ -16,11 +17,27 @@ interface AddonConfigStepProps {
 
 function AddonConfigStep({ value, onChange, onNext, onBack }: AddonConfigStepProps) {
   const [form] = Form.useForm();
+  const [selectedProvider, setSelectedProvider] = useState<string>(value?.provider || "real-debrid");
 
   async function handleNext() {
     try {
       await form.validateFields();
       const values = form.getFieldsValue();
+      
+      // Trim token values to remove whitespace
+      if (values.realDebridToken) {
+        values.realDebridToken = values.realDebridToken.trim();
+      }
+      if (values.alldebridToken) {
+        values.alldebridToken = values.alldebridToken.trim();
+      }
+      if (values.premiumizeToken) {
+        values.premiumizeToken = values.premiumizeToken.trim();
+      }
+      if (values.torboxToken) {
+        values.torboxToken = values.torboxToken.trim();
+      }
+      
       onChange(values);
       onNext();
     } catch (error) {
@@ -47,6 +64,20 @@ function AddonConfigStep({ value, onChange, onNext, onBack }: AddonConfigStepPro
           provider: "real-debrid",
           port: 7000,
           ...value,
+        }}
+        onValuesChange={(changedValues) => {
+          if (changedValues.provider !== undefined) {
+            setSelectedProvider(changedValues.provider);
+            // Clear token fields when switching providers to avoid confusion
+            if (changedValues.provider !== selectedProvider) {
+              form.setFieldsValue({
+                realDebridToken: undefined,
+                alldebridToken: undefined,
+                premiumizeToken: undefined,
+                torboxToken: undefined,
+              });
+            }
+          }
         }}
       >
         <Form.Item
@@ -95,13 +126,94 @@ function AddonConfigStep({ value, onChange, onNext, onBack }: AddonConfigStepPro
           name="provider"
           rules={[{ required: true, message: "Please select a provider" }]}
         >
-          <Select>
+          <Select onChange={(value) => setSelectedProvider(value)}>
             <Select.Option value="real-debrid">Real-Debrid</Select.Option>
             <Select.Option value="alldebrid">AllDebrid</Select.Option>
             <Select.Option value="premiumize">Premiumize</Select.Option>
             <Select.Option value="torbox">TorBox</Select.Option>
           </Select>
         </Form.Item>
+
+        {selectedProvider === "real-debrid" && (
+          <Form.Item
+            label="Real-Debrid API Token"
+            name="realDebridToken"
+            rules={[
+              { required: true, message: "Please enter your Real-Debrid API token" },
+              { min: 10, message: "Token must be at least 10 characters" },
+            ]}
+            extra={
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                Get your API token from{" "}
+                <a href="https://real-debrid.com/apitoken" target="_blank" rel="noopener noreferrer">
+                  https://real-debrid.com/apitoken
+                </a>
+              </Text>
+            }
+          >
+            <Input.Password placeholder="Enter your Real-Debrid API token" />
+          </Form.Item>
+        )}
+
+        {selectedProvider === "alldebrid" && (
+          <Form.Item
+            label="AllDebrid API Token"
+            name="alldebridToken"
+            rules={[
+              { required: true, message: "Please enter your AllDebrid API token" },
+              { min: 10, message: "Token must be at least 10 characters" },
+            ]}
+            extra={
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                Get your API token from{" "}
+                <a href="https://alldebrid.com/apikeys/" target="_blank" rel="noopener noreferrer">
+                  https://alldebrid.com/apikeys/
+                </a>
+              </Text>
+            }
+          >
+            <Input.Password placeholder="Enter your AllDebrid API token" />
+          </Form.Item>
+        )}
+
+        {selectedProvider === "premiumize" && (
+          <Form.Item
+            label="Premiumize API Token"
+            name="premiumizeToken"
+            rules={[
+              { required: true, message: "Please enter your Premiumize API token" },
+              { min: 10, message: "Token must be at least 10 characters" },
+            ]}
+            extra={
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                Get your API token from{" "}
+                <a href="https://www.premiumize.me/account" target="_blank" rel="noopener noreferrer">
+                  https://www.premiumize.me/account
+                </a>
+              </Text>
+            }
+          >
+            <Input.Password placeholder="Enter your Premiumize API token" />
+          </Form.Item>
+        )}
+
+        {selectedProvider === "torbox" && (
+          <Form.Item
+            label="TorBox API Token"
+            name="torboxToken"
+            rules={[
+              { required: true, message: "Please enter your TorBox API token" },
+              { min: 10, message: "Token must be at least 10 characters" },
+            ]}
+            extra={
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                Get your API token from your TorBox account settings
+              </Text>
+            }
+          >
+            <Input.Password placeholder="Enter your TorBox API token" />
+          </Form.Item>
+        )}
 
         <Form.Item
           label="Torrent Limit"

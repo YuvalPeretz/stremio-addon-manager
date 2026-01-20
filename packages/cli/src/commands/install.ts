@@ -514,6 +514,21 @@ async function promptFeatures() {
       message: 'Enable auto-start on boot?',
       default: true,
     },
+    {
+      type: 'input',
+      name: 'sslEmail',
+      message: 'Email address for SSL certificate (Let\'s Encrypt):',
+      validate: (input: string) => {
+        if (!input || input.trim().length === 0) {
+          return 'Email address is required for Let\'s Encrypt certificate registration';
+        }
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(input.trim())) {
+          return 'Please enter a valid email address';
+        }
+        return true;
+      },
+    },
   ]);
 
   return {
@@ -536,6 +551,7 @@ async function promptFeatures() {
       retention: 7,
     },
     ssl: true,
+    sslEmail: answers.sslEmail.trim(),
     duckdnsUpdater: false,
     autoStart: answers.autoStart,
   };

@@ -277,6 +277,17 @@ function Configuration() {
             <Form.Item label="SSL/HTTPS" name={["features", "ssl"]} valuePropName="checked">
               <Switch disabled />
             </Form.Item>
+
+            <Form.Item
+              label="SSL Email Address"
+              name={["features", "sslEmail"]}
+              rules={[
+                { type: "email", message: "Please enter a valid email address" },
+              ]}
+              extra="Email address for Let's Encrypt certificate registration and renewal notifications"
+            >
+              <Input type="email" placeholder="your-email@example.com" />
+            </Form.Item>
           </Card>
         </Flex>
       ),

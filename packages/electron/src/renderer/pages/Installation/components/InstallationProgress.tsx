@@ -22,7 +22,20 @@ function InstallationProgress() {
   useEffect(() => {
     // Subscribe to installation progress events
     window.electron.install.onProgress((progress: any) => {
-      setProgressUpdates((prev) => [...prev, progress]);
+      setProgressUpdates((prev) => {
+        // Find if this step already exists in the updates
+        const existingIndex = prev.findIndex((update) => update.step === progress.step);
+        
+        if (existingIndex >= 0) {
+          // Replace the existing step update instead of appending
+          const updated = [...prev];
+          updated[existingIndex] = progress;
+          return updated;
+        } else {
+          // New step, append it
+          return [...prev, progress];
+        }
+      });
     });
 
     return () => {

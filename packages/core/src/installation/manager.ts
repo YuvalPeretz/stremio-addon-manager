@@ -21,6 +21,7 @@ import type {
   InstallationProgress,
   PrerequisiteCheck,
   ProgressCallback,
+  CertificateInfo,
 } from './types.js';
 import { InstallationStep, StepStatus } from './types.js';
 
@@ -62,15 +63,63 @@ export class InstallationManager {
       configKeys: Object.keys(this.options.config),
     });
 
-    // Verify addonId is set - if not, this is a critical error
+    // CRITICAL: Try to generate addonId if missing (fallback safety net)
+    // This should have been set in Electron main process, but if it wasn't, generate it here
     if (!this.options.config.addonId) {
-      logger.error('CRITICAL: addonId is missing in options.config at start of installation', {
+      logger.warn('addonId is missing at start of installation - attempting to generate from addon name/domain', {
         hasAddonName: !!this.options.config.addon?.name,
         hasAddonDomain: !!this.options.config.addon?.domain,
-        configKeys: Object.keys(this.options.config),
       });
-      // Don't throw - allow installation to proceed but registration will be skipped
-      // This helps identify the issue without breaking existing installations
+      
+      // Generate addonId from name or domain
+      let addonId: string | undefined;
+      if (this.options.config.addon?.name) {
+        addonId = this.options.config.addon.name
+          .toLowerCase()
+          .trim()
+          .replace(/[^\w\s-]/g, "")
+          .replace(/[\s_-]+/g, "-")
+          .replace(/^-+|-+$/g, "");
+      } else if (this.options.config.addon?.domain) {
+        addonId = this.options.config.addon.domain
+          .toLowerCase()
+          .replace(/\./g, "-")
+          .replace(/[^\w-]/g, "")
+          .replace(/-+/g, "-")
+          .replace(/^-+|-+$/g, "");
+      }
+      
+      if (addonId) {
+        // Ensure unique ID by checking registry
+        try {
+          const { AddonRegistryManager, generateServiceName } = await import('../config/registry-manager.js');
+          const registryManager = new AddonRegistryManager();
+          await registryManager.initialize();
+          const registry = registryManager.getRegistry();
+          await registry.load();
+          
+          let finalAddonId = addonId;
+          let counter = 1;
+          while (registry.exists(finalAddonId)) {
+            finalAddonId = `${addonId}-${counter}`;
+            counter++;
+          }
+          
+          this.options.config.addonId = finalAddonId;
+          this.options.config.serviceName = generateServiceName(finalAddonId);
+          
+          logger.info('Generated addonId as fallback', { addonId: finalAddonId });
+        } catch (error) {
+          logger.error('Failed to generate addonId as fallback', { error: (error as Error).message });
+        }
+      }
+      
+      if (!this.options.config.addonId) {
+        logger.error('CRITICAL: Could not generate addonId - registration will be skipped', {
+          hasAddonName: !!this.options.config.addon?.name,
+          hasAddonDomain: !!this.options.config.addon?.domain,
+        });
+      }
     }
 
     try {
@@ -208,9 +257,9 @@ export class InstallationManager {
         });
       }
 
-      // Step 17: Cleanup
+      // Step 17: Cleanup temporary files only (not the installed addon)
       await this.executeStep(InstallationStep.CLEANUP, async () => {
-        await this.cleanup();
+        await this.cleanupTemporaryFiles();
       });
 
       // Mark as complete
@@ -235,6 +284,14 @@ export class InstallationManager {
     } catch (error) {
       const duration = Date.now() - this.startTime;
       logger.error('Installation failed', error);
+
+      // Cleanup after failure
+      try {
+        await this.cleanup();
+      } catch (cleanupError) {
+        logger.error('Error during failure cleanup', cleanupError);
+        // Don't throw - cleanup errors shouldn't mask the original error
+      }
 
       return {
         success: false,
@@ -1595,20 +1652,59 @@ import "./bin/server.js";
    * - Manifest endpoint (/:password/manifest.json) serves Stremio manifest
    * - Stream endpoint (/:password/stream/*) serves stream data
    * 
-   * Note: When SSL is enabled, certbot will:
-   * - Replace the HTTP server block (port 80) with a redirect to HTTPS
-   * - Create/modify the HTTPS server block (port 443) and preserve these location blocks
+   * Note: When SSL is enabled:
+   * - If an existing certificate is found, configures SSL directly
+   * - Otherwise, certbot will be called in setupSSL() to:
+   *   - Replace the HTTP server block (port 80) with a redirect to HTTPS
+   *   - Create/modify the HTTPS server block (port 443) and preserve these location blocks
    */
   private async setupNginx(): Promise<void> {
     logger.info('Setting up Nginx');
 
     const domain = this.options.config.addon.domain;
     const port = this.options.config.addon.port || 7000;
+    
+    // Check if SSL is enabled and if a certificate already exists
+    let existingCert: CertificateInfo | null = null;
+    if (this.options.config.features.ssl) {
+      existingCert = await this.checkExistingCertificate(domain);
+      if (existingCert && existingCert.isValid) {
+        logger.info('Found existing SSL certificate, configuring Nginx with SSL from the start', {
+          domain,
+          certificatePath: existingCert.certificatePath,
+        });
+        // Configure Nginx with SSL using existing certificate
+        await this.configureNginxWithExistingCertificate(
+          domain,
+          port,
+          existingCert.certificatePath,
+          existingCert.privateKeyPath,
+          this.options.config.paths.nginxConfig,
+          this.getServiceName()
+        );
+        
+        // Test and reload Nginx
+        const testResult = await this.execSudo('nginx -t');
+        if (testResult.code !== 0) {
+          throw new Error(`Nginx configuration test failed: ${testResult.stderr}`);
+        }
+        await this.execSudo('systemctl reload nginx');
+        logger.info('Nginx configured with existing SSL certificate');
+        return; // SSL is already configured, skip HTTP-only config
+      }
+    }
 
     const nginxConfig = `
 server {
     listen 80;
     server_name ${domain};
+
+    # Let's Encrypt ACME challenge - must come BEFORE catch-all location
+    # This allows certbot to verify domain ownership even when backend isn't running
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+        try_files $uri =404;
+    }
 
     # Root path - proxy to backend landing page
     location = / {
@@ -1643,6 +1739,18 @@ server {
     # Stremio addon manifest endpoint
     # Matches: /:password/manifest.json
     location ~ ^/([^/]+)/manifest\\.json$ {
+        # Handle OPTIONS preflight requests FIRST (before proxy_pass)
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin * always;
+            add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+            add_header Access-Control-Max-Age 86400 always;
+            add_header Content-Length 0;
+            add_header Content-Type text/plain;
+            return 204;
+        }
+        
+        # Proxy actual GET requests to backend
         proxy_pass http://localhost:${port}/$1/manifest.json;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -1655,20 +1763,27 @@ server {
         proxy_connect_timeout 5s;
         proxy_read_timeout 10s;
         
-        # CORS headers (if needed)
+        # CORS headers for actual response (backend also sets these, but ensure they're present)
         add_header Access-Control-Allow-Origin * always;
         add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
         add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
-        
-        # Handle OPTIONS requests for CORS
-        if ($request_method = OPTIONS) {
-            return 204;
-        }
     }
 
     # Stremio stream endpoint
     # Matches: /:password/stream/:type/:id.json
     location ~ ^/([^/]+)/stream/(.+)$ {
+        # Handle OPTIONS preflight requests FIRST (before proxy_pass)
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin * always;
+            add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+            add_header Access-Control-Max-Age 86400 always;
+            add_header Content-Length 0;
+            add_header Content-Type text/plain;
+            return 204;
+        }
+        
+        # Proxy actual GET requests to backend
         proxy_pass http://localhost:${port}/$1/stream/$2;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -1682,15 +1797,10 @@ server {
         proxy_connect_timeout 75s;
         proxy_send_timeout 300s;
         
-        # CORS headers (if needed)
+        # CORS headers for actual response (backend also sets these, but ensure they're present)
         add_header Access-Control-Allow-Origin * always;
         add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
         add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
-        
-        # Handle OPTIONS requests for CORS
-        if ($request_method = OPTIONS) {
-            return 204;
-        }
     }
 
     # Catch-all: proxy all other paths to backend
@@ -1735,23 +1845,677 @@ server {
   }
 
   /**
+   * Check if a valid SSL certificate already exists for the domain
+   */
+  private async checkExistingCertificate(domain: string): Promise<CertificateInfo | null> {
+    logger.info('Checking for existing SSL certificate', { domain });
+
+    try {
+      // First, check if certificate files exist directly in /etc/letsencrypt/live/
+      // This is more reliable than parsing certbot output, especially if certbot database is missing
+      const certDir = `/etc/letsencrypt/live/${domain}`;
+      const certPath = `${certDir}/fullchain.pem`;
+      const keyPath = `${certDir}/privkey.pem`;
+      
+      logger.debug('Checking for certificate files directly', { certDir, certPath, keyPath });
+      
+      const certFileExists = await this.execCommand(`test -f "${certPath}" && echo "EXISTS" || echo "MISSING"`);
+      const keyFileExists = await this.execCommand(`test -f "${keyPath}" && echo "EXISTS" || echo "MISSING"`);
+      
+      if (!certFileExists.stdout.includes('MISSING') && !keyFileExists.stdout.includes('MISSING')) {
+        logger.info('Found certificate files directly in filesystem', { certPath, keyPath });
+        
+        // Verify certificate is valid by checking expiry date using openssl
+        const certInfoResult = await this.execCommand(`openssl x509 -in "${certPath}" -noout -dates -subject 2>&1`);
+        
+        if (certInfoResult.code === 0) {
+          // Parse expiry date from openssl output
+          // Format: notAfter=Jan 21 12:00:00 2026 GMT
+          const notAfterMatch = certInfoResult.stdout.match(/notAfter=([^\n]+)/i);
+          if (notAfterMatch) {
+            const expiryDateStr = notAfterMatch[1].trim();
+            const expiryDate = new Date(expiryDateStr);
+            
+            if (!isNaN(expiryDate.getTime())) {
+              const now = new Date();
+              const daysUntilExpiry = Math.floor((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+              const isValid = daysUntilExpiry > 30;
+              
+              if (isValid) {
+                logger.info('Found valid existing certificate via filesystem check', {
+                  domain,
+                  certPath,
+                  keyPath,
+                  expiryDate: expiryDate.toISOString(),
+                  daysUntilExpiry,
+                });
+                
+                return {
+                  domain,
+                  expiryDate,
+                  certificatePath: certPath,
+                  privateKeyPath: keyPath,
+                  isValid: true,
+                  daysUntilExpiry,
+                };
+              } else {
+                logger.info('Certificate files exist but are expired or expiring soon', {
+                  domain,
+                  expiryDate: expiryDate.toISOString(),
+                  daysUntilExpiry,
+                });
+              }
+            }
+          }
+        }
+      }
+      
+      // Fallback: Try certbot certificates command to list all certificates
+      logger.debug('Certificate files not found, checking certbot database', { domain });
+      const result = await this.execSudo('certbot certificates 2>&1');
+      
+      if (result.code !== 0) {
+        // Certbot might not be installed or accessible
+        logger.warn('Could not check for existing certificates (certbot may not be installed or accessible)', {
+          exitCode: result.code,
+          stderr: result.stderr,
+          stdout: result.stdout,
+        });
+        return null;
+      }
+
+      const output = result.stdout + result.stderr;
+      
+      // Log the full certbot output for debugging
+      logger.debug('Certbot certificates output', { 
+        domain,
+        outputLength: output.length,
+        outputPreview: output.substring(0, 500),
+      });
+      
+      // Parse certbot certificates output
+      // Certbot can store certificates with the domain as the certificate name
+      // Try multiple patterns to find the certificate
+      const domainEscaped = domain.replace(/\./g, '\\.');
+      
+      // Pattern 1: Certificate Name matches domain exactly
+      let domainRegex = new RegExp(`Certificate Name:\\s*${domainEscaped}`, 'i');
+      let domainMatch = output.match(domainRegex);
+      
+      // Pattern 2: Domain appears in the Domains list (certificate might have a different name)
+      if (!domainMatch) {
+        logger.debug('Certificate name does not match domain, checking domains list', { domain });
+        // Look for any certificate that includes this domain in its domains list
+        const domainsPattern = new RegExp(`Domains:\\s*([^\\n]+)`, 'gi');
+        let match;
+        while ((match = domainsPattern.exec(output)) !== null) {
+          const domainsList = match[1].trim().split(/\s+/);
+          if (domainsList.includes(domain)) {
+            // Found a certificate that covers this domain, now find its certificate name
+            const beforeMatch = output.substring(0, match.index);
+            const certNameMatch = beforeMatch.match(/Certificate Name:\s*([^\n]+)/gi);
+            if (certNameMatch && certNameMatch.length > 0) {
+              // Get the last certificate name before this domains line (most recent)
+              const lastCertName = certNameMatch[certNameMatch.length - 1];
+              domainMatch = [lastCertName];
+              logger.info('Found certificate covering domain in domains list', { 
+                domain,
+                certificateName: lastCertName,
+              });
+              break;
+            }
+          }
+        }
+      }
+      
+      if (!domainMatch) {
+        logger.info('No existing certificate found for domain', { domain });
+        return null;
+      }
+
+      // Extract certificate information from the output
+      // Find the certificate block starting from the match
+      const certStartIndex = output.indexOf(domainMatch[0]);
+      const certBlock = output.substring(certStartIndex);
+      
+      // Extract domains covered by this certificate
+      const domainsMatch = certBlock.match(/Domains:\s*([^\n]+)/i);
+      if (!domainsMatch) {
+        logger.warn('Found certificate entry but could not parse domains', { domain });
+        return null;
+      }
+      
+      const domains = domainsMatch[1].trim().split(/\s+/);
+      if (!domains.includes(domain)) {
+        logger.info('Certificate exists but does not cover this domain', { domain, certificateDomains: domains });
+        return null;
+      }
+
+      // Extract expiry date
+      const expiryMatch = certBlock.match(/Expiry Date:\s*([^\n(]+)\s*\(([^)]+)\)/i);
+      if (!expiryMatch) {
+        logger.warn('Found certificate but could not parse expiry date', { domain });
+        return null;
+      }
+
+      const expiryDateStr = expiryMatch[1].trim();
+      const validityStatus = expiryMatch[2].trim();
+      
+      // Parse expiry date (format: YYYY-MM-DD HH:MM:SS+00:00)
+      const expiryDate = new Date(expiryDateStr);
+      if (isNaN(expiryDate.getTime())) {
+        logger.warn('Found certificate but could not parse expiry date format', { domain, expiryDateStr });
+        return null;
+      }
+
+      // Check if certificate is valid (not expired and has sufficient time remaining)
+      const now = new Date();
+      const daysUntilExpiry = Math.floor((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      const isValid = validityStatus.toLowerCase().includes('valid') && daysUntilExpiry > 30;
+
+      if (!isValid) {
+        logger.info('Certificate exists but is expired or expiring soon', {
+          domain,
+          expiryDate: expiryDate.toISOString(),
+          daysUntilExpiry,
+          validityStatus,
+        });
+        return null;
+      }
+
+      // Extract certificate paths
+      const certPathMatch = certBlock.match(/Certificate Path:\s*([^\n]+)/i);
+      const keyPathMatch = certBlock.match(/Private Key Path:\s*([^\n]+)/i);
+
+      if (!certPathMatch || !keyPathMatch) {
+        logger.warn('Found certificate but could not parse file paths', { domain });
+        return null;
+      }
+
+      const certificatePath = certPathMatch[1].trim();
+      const privateKeyPath = keyPathMatch[1].trim();
+
+      // Verify certificate files exist
+      const certExists = await this.execCommand(`test -f "${certificatePath}" && echo "EXISTS" || echo "MISSING"`);
+      const keyExists = await this.execCommand(`test -f "${privateKeyPath}" && echo "EXISTS" || echo "MISSING"`);
+
+      if (certExists.stdout.includes('MISSING') || keyExists.stdout.includes('MISSING')) {
+        logger.warn('Certificate files are missing', {
+          domain,
+          certificatePath,
+          privateKeyPath,
+          certExists: !certExists.stdout.includes('MISSING'),
+          keyExists: !keyExists.stdout.includes('MISSING'),
+        });
+        return null;
+      }
+
+      logger.info('Found valid existing certificate', {
+        domain,
+        expiryDate: expiryDate.toISOString(),
+        daysUntilExpiry,
+        certificatePath,
+        privateKeyPath,
+      });
+
+      return {
+        domain,
+        expiryDate,
+        certificatePath,
+        privateKeyPath,
+        isValid: true,
+        daysUntilExpiry,
+      };
+    } catch (error) {
+      logger.warn('Error checking for existing certificate', {
+        domain,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Verify and configure Nginx to use the SSL certificate
+   */
+  private async verifyNginxSSLConfig(domain: string, certificatePath: string, privateKeyPath: string): Promise<void> {
+    logger.info('Verifying and configuring Nginx SSL configuration', { domain, certificatePath, privateKeyPath });
+
+    try {
+      const port = this.options.config.addon.port || 7000;
+      const serviceName = this.getServiceName();
+      const nginxConfigPath = this.options.config.paths.nginxConfig;
+      
+      // Check if Nginx config exists
+      const configExists = await this.execCommand(`test -f "${nginxConfigPath}" && echo "EXISTS" || echo "MISSING"`);
+      
+      if (configExists.stdout.includes('MISSING')) {
+        logger.warn('Nginx config file not found, will need to configure SSL', {
+          domain,
+          nginxConfigPath,
+        });
+        // Config will be created by setupNginx, but we need to add SSL to it
+        await this.configureNginxWithExistingCertificate(domain, port, certificatePath, privateKeyPath, nginxConfigPath, serviceName);
+        return;
+      }
+
+      // Read current config
+      const configContentResult = await this.execCommand(`cat "${nginxConfigPath}"`);
+      const configContent = configContentResult.stdout;
+      
+      // Check if SSL is already configured
+      const hasSSLBlock = configContent.includes('listen 443') || configContent.includes('ssl_certificate');
+      const hasCertPath = configContent.includes(certificatePath);
+      const hasKeyPath = configContent.includes(privateKeyPath);
+
+      if (!hasSSLBlock || !hasCertPath || !hasKeyPath) {
+        logger.info('Nginx config exists but SSL is not properly configured, updating configuration', {
+          domain,
+          hasSSLBlock,
+          hasCertPath,
+          hasKeyPath,
+        });
+        
+        // Configure Nginx to use the existing certificate
+        await this.configureNginxWithExistingCertificate(domain, port, certificatePath, privateKeyPath, nginxConfigPath, serviceName);
+      } else {
+        logger.info('Nginx configuration already uses the SSL certificate', { domain });
+      }
+
+      // Test Nginx configuration
+      const nginxTest = await this.execSudo('nginx -t 2>&1');
+      if (nginxTest.code !== 0) {
+        throw new Error(`Nginx configuration test failed: ${nginxTest.stdout} ${nginxTest.stderr}`);
+      }
+
+      // Reload Nginx to apply changes
+      await this.execSudo('systemctl reload nginx');
+      logger.info('Nginx configured and reloaded with SSL certificate', { domain });
+    } catch (error) {
+      logger.error('Error configuring Nginx SSL', {
+        domain,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error; // Fail if we can't configure SSL properly
+    }
+  }
+
+  /**
+   * Configure Nginx to use an existing SSL certificate
+   */
+  private async configureNginxWithExistingCertificate(
+    domain: string,
+    port: number,
+    certificatePath: string,
+    privateKeyPath: string,
+    nginxConfigPath: string,
+    serviceName: string
+  ): Promise<void> {
+    logger.info('Configuring Nginx to use existing SSL certificate', {
+      domain,
+      certificatePath,
+      privateKeyPath,
+    });
+
+    // Read existing config if it exists
+    let existingConfig = '';
+    const configExists = await this.execCommand(`test -f "${nginxConfigPath}" && echo "EXISTS" || echo "MISSING"`);
+    if (configExists.stdout.includes('EXISTS')) {
+      const configContentResult = await this.execCommand(`cat "${nginxConfigPath}"`);
+      existingConfig = configContentResult.stdout;
+    }
+
+    // Check if config already has SSL configured
+    if (existingConfig.includes('listen 443') && existingConfig.includes(certificatePath)) {
+      logger.info('Nginx config already has SSL configured with this certificate', { domain });
+      return;
+    }
+
+    // Build complete Nginx config with SSL
+    const nginxConfig = `
+# HTTP server - redirect to HTTPS
+server {
+    listen 80;
+    server_name ${domain};
+
+    # Let's Encrypt ACME challenge - must come BEFORE catch-all location
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+        try_files $uri =404;
+    }
+
+    # Redirect all HTTP traffic to HTTPS
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# HTTPS server with SSL certificate
+server {
+    listen 443 ssl http2;
+    server_name ${domain};
+
+    # SSL certificate configuration
+    ssl_certificate ${certificatePath};
+    ssl_certificate_key ${privateKeyPath};
+    
+    # SSL configuration
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    # Root path - proxy to backend landing page
+    location = / {
+        proxy_pass http://localhost:${port}/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        
+        # Error handling for backend connection failures
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+    }
+
+    # Stats endpoint - proxy to backend stats API
+    location = /stats {
+        proxy_pass http://localhost:${port}/stats;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        
+        # Error handling for backend connection failures
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+    }
+
+    # Stremio addon manifest endpoint
+    # Matches: /:password/manifest.json
+    location ~ ^/([^/]+)/manifest\\.json$ {
+        # Handle OPTIONS preflight requests FIRST (before proxy_pass)
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin * always;
+            add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+            add_header Access-Control-Max-Age 86400 always;
+            add_header Content-Length 0;
+            add_header Content-Type text/plain;
+            return 204;
+        }
+        
+        # Proxy actual GET requests to backend
+        proxy_pass http://localhost:${port}/$1/manifest.json;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        
+        # Error handling for backend connection failures
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+        
+        # CORS headers for actual response (backend also sets these, but ensure they're present)
+        add_header Access-Control-Allow-Origin * always;
+        add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+    }
+
+    # Stremio stream endpoint
+    # Matches: /:password/stream/:type/:id.json
+    location ~ ^/([^/]+)/stream/(.+)$ {
+        # Handle OPTIONS preflight requests FIRST (before proxy_pass)
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin * always;
+            add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+            add_header Access-Control-Max-Age 86400 always;
+            add_header Content-Length 0;
+            add_header Content-Type text/plain;
+            return 204;
+        }
+        
+        # Proxy actual GET requests to backend
+        proxy_pass http://localhost:${port}/$1/stream/$2;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        
+        # Timeout settings for long-running stream requests
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 75s;
+        proxy_send_timeout 300s;
+        
+        # CORS headers for actual response (backend also sets these, but ensure they're present)
+        add_header Access-Control-Allow-Origin * always;
+        add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+    }
+
+    # Catch-all: proxy all other paths to backend
+    location / {
+        proxy_pass http://localhost:${port};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        
+        # Error handling for backend connection failures
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+    }
+}
+`;
+
+    // Write Nginx config using temp file approach
+    const tempConfigPath = `/tmp/stremio-addon-nginx-ssl.${Date.now()}.conf`;
+    await this.execCommand(`cat > ${tempConfigPath} << 'EOF'\n${nginxConfig}\nEOF`);
+    await this.execSudo(`mv ${tempConfigPath} ${nginxConfigPath}`);
+
+    // Create/update symbolic link
+    await this.execSudo(`ln -sf ${nginxConfigPath} /etc/nginx/sites-enabled/${serviceName}`);
+
+    logger.info('Nginx configuration updated with SSL certificate', { domain, nginxConfigPath });
+  }
+
+  /**
    * Setup SSL with Let's Encrypt
    */
   private async setupSSL(): Promise<void> {
     logger.info('Setting up SSL with Let\'s Encrypt');
 
     const domain = this.options.config.addon.domain;
+    const sslEmail = this.options.config.features.sslEmail;
 
-    // Run certbot
+    if (!sslEmail) {
+      throw new Error('SSL email address is required for Let\'s Encrypt certificate registration. Please provide an email address in the features configuration.');
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(sslEmail)) {
+      throw new Error(`Invalid email address format: ${sslEmail}`);
+    }
+
+    logger.info('Using SSL email for certificate registration', { email: sslEmail });
+
+    // Check if a valid certificate already exists
+    const existingCert = await this.checkExistingCertificate(domain);
+    
+    if (existingCert && existingCert.isValid) {
+      logger.info('Found existing valid SSL certificate, reusing it', {
+        domain,
+        expiryDate: existingCert.expiryDate.toISOString(),
+        daysUntilExpiry: existingCert.daysUntilExpiry,
+        certificatePath: existingCert.certificatePath,
+      });
+
+      // Verify Nginx is configured to use this certificate
+      await this.verifyNginxSSLConfig(domain, existingCert.certificatePath, existingCert.privateKeyPath);
+      
+      logger.info('SSL certificate setup complete (using existing certificate)', { domain });
+      return;
+    }
+
+    if (existingCert && !existingCert.isValid) {
+      logger.info('Existing certificate found but is expired or expiring soon, creating new certificate', {
+        domain,
+        expiryDate: existingCert.expiryDate.toISOString(),
+        daysUntilExpiry: existingCert.daysUntilExpiry,
+      });
+    }
+
+    // Ensure webroot directory exists for ACME challenges (certbot --nginx uses this)
+    // This is needed even though certbot --nginx modifies nginx config automatically
+    const webrootDir = '/var/www/html';
+    const mkdirResult = await this.execSudo(`mkdir -p ${webrootDir}`);
+    if (mkdirResult.code !== 0) {
+      logger.warn('Failed to create webroot directory, continuing anyway', { 
+        error: mkdirResult.stderr 
+      });
+    }
+
+    // Verify Nginx is running and accessible
+    const nginxStatus = await this.execCommand('systemctl is-active nginx');
+    if (nginxStatus.stdout.trim() !== 'active') {
+      throw new Error('Nginx is not running. Please start Nginx before SSL setup.');
+    }
+
+    // Verify domain is accessible (basic check)
+    logger.info('Verifying domain accessibility for SSL setup', { domain });
+    
+    // Pre-check DNS resolution to catch DNS issues early
+    logger.info('Checking DNS resolution for domain', { domain });
+    const dnsCheck = await this.execCommand(`dig ${domain} +short 2>&1 || nslookup ${domain} 2>&1 | grep -A1 "Name:" || echo "DNS_CHECK_FAILED"`);
+    if (dnsCheck.stdout.includes('DNS_CHECK_FAILED') || (!dnsCheck.stdout.trim() && dnsCheck.code !== 0)) {
+      logger.warn('DNS resolution check failed or returned no results', {
+        domain,
+        dnsOutput: dnsCheck.stdout,
+        dnsStderr: dnsCheck.stderr,
+      });
+      // Don't fail here - certbot will provide better error messages, but log a warning
+    } else {
+      const resolvedIPs = dnsCheck.stdout.trim().split('\n').filter(line => line.trim() && !line.includes('DNS_CHECK_FAILED'));
+      logger.info('DNS resolution check passed', {
+        domain,
+        resolvedIPs: resolvedIPs.length > 0 ? resolvedIPs : ['No IPs found'],
+      });
+    }
+
+    // Run certbot with better error handling
+    logger.info('Running certbot to obtain SSL certificate', { domain, email: sslEmail });
     const result = await this.execSudo(
-      `certbot --nginx -d ${domain} --non-interactive --agree-tos --email admin@${domain} --redirect`
+      `certbot --nginx -d ${domain} --non-interactive --agree-tos --email ${sslEmail} --redirect`
     );
 
     if (result.code !== 0) {
-      throw new Error(`SSL setup failed: ${result.stderr}`);
+      // Get more detailed error information
+      const certbotLog = await this.execCommand('sudo tail -100 /var/log/letsencrypt/letsencrypt.log 2>/dev/null || echo "Log file not accessible"');
+      const nginxTest = await this.execSudo('nginx -t 2>&1');
+      
+      logger.error('SSL setup failed', {
+        exitCode: result.code,
+        stderr: result.stderr,
+        stdout: result.stdout,
+        nginxConfigTest: nginxTest.stdout + nginxTest.stderr,
+        certbotLog: certbotLog.stdout,
+      });
+
+      // Provide helpful error message
+      let errorMessage = `SSL setup failed: ${result.stderr || result.stdout}`;
+      
+      // Check for DNS/CAA errors
+      if (result.stderr.includes('CAA') || result.stdout.includes('CAA') ||
+          result.stderr.includes('DNS problem') || result.stdout.includes('DNS problem') ||
+          result.stderr.includes('query timed out') || result.stdout.includes('query timed out') ||
+          result.stderr.includes('caa') || result.stdout.includes('caa')) {
+        errorMessage += '\n\n⚠️  DNS/CAA Record Error:';
+        errorMessage += '\nLet\'s Encrypt could not verify DNS records for your domain.';
+        errorMessage += '\n\nPossible causes:';
+        errorMessage += '\n1. DNS server timeout or connectivity issues';
+        errorMessage += '\n2. DNS propagation delay (new domain/subdomain)';
+        errorMessage += '\n3. Firewall blocking DNS queries from Let\'s Encrypt servers';
+        errorMessage += '\n4. DNS provider issues';
+        errorMessage += '\n\nTroubleshooting steps:';
+        errorMessage += '\n1. Verify DNS resolution:';
+        errorMessage += `\n   dig ${domain} +short`;
+        errorMessage += `\n   nslookup ${domain}`;
+        errorMessage += '\n2. Check CAA records:';
+        errorMessage += `\n   dig ${domain} CAA +short`;
+        errorMessage += '\n3. Verify domain points to this server:';
+        errorMessage += '\n   curl -I http://' + domain;
+        errorMessage += '\n4. Wait a few minutes and retry (DNS propagation)';
+        errorMessage += '\n5. Check DNS provider status page';
+        errorMessage += '\n\nIf DNS is working but CAA lookup fails, try:';
+        errorMessage += '\n- Wait 5-10 minutes and retry (DNS propagation delay)';
+        errorMessage += '\n- Check if your DNS provider has CAA record restrictions';
+        errorMessage += '\n- Verify your DNS provider allows Let\'s Encrypt certificates';
+        errorMessage += '\n- Try using DNS validation instead of HTTP validation (requires DNS API access)';
+        errorMessage += '\n\nNote: This error often occurs when:';
+        errorMessage += '\n- The domain was recently created or DNS was recently changed';
+        errorMessage += '\n- Your DNS provider\'s CAA lookup servers are slow or unreachable';
+        errorMessage += '\n- There are network connectivity issues between Let\'s Encrypt and DNS servers';
+        errorMessage += '\n\nRetry after waiting 10-15 minutes for DNS propagation.';
+      }
+      // Check for rate limit errors
+      else if (result.stderr.includes('too many certificates') || result.stdout.includes('too many certificates') ||
+          result.stderr.includes('rateLimited') || result.stdout.includes('rateLimited')) {
+        errorMessage += '\n\n⚠️  Let\'s Encrypt Rate Limit Error:';
+        errorMessage += '\nYou have requested too many certificates for this domain recently.';
+        errorMessage += '\n\nThe installation checked for existing certificates but none were found.';
+        errorMessage += '\nLet\'s Encrypt allows a maximum of 5 certificates per domain per week.';
+        errorMessage += '\n\nPossible solutions:';
+        errorMessage += '\n1. Wait until the rate limit expires (usually 7 days from first request)';
+        errorMessage += '\n2. Use a different domain/subdomain for this addon';
+        errorMessage += '\n3. If you have certificates elsewhere, copy them to:';
+        errorMessage += `\n   /etc/letsencrypt/live/${domain}/fullchain.pem`;
+        errorMessage += `\n   /etc/letsencrypt/live/${domain}/privkey.pem`;
+        errorMessage += '\n\nTo check existing certificates: sudo certbot certificates';
+        errorMessage += '\nTo view certificate details: sudo certbot certificates -d ' + domain;
+        
+        // Try to extract retry-after date from error message
+        const retryMatch = result.stderr.match(/retry after ([^\n]+)/i) || result.stdout.match(/retry after ([^\n]+)/i);
+        if (retryMatch) {
+          errorMessage += '\n\nYou can retry after: ' + retryMatch[1];
+        } else {
+          // Try to extract from the detailed error
+          const retryAfterMatch = result.stderr.match(/Retry-After: (\d+)/i) || result.stdout.match(/Retry-After: (\d+)/i);
+          if (retryAfterMatch) {
+            const seconds = parseInt(retryAfterMatch[1]);
+            const hours = Math.floor(seconds / 3600);
+            const days = Math.floor(hours / 24);
+            if (days > 0) {
+              errorMessage += `\n\nApproximate retry time: ${days} day(s) from now`;
+            } else if (hours > 0) {
+              errorMessage += `\n\nApproximate retry time: ${hours} hour(s) from now`;
+            }
+          }
+        }
+      } else if (result.stderr.includes('Some challenges have failed') || result.stdout.includes('Some challenges have failed')) {
+        errorMessage += '\n\nPossible causes:';
+        errorMessage += '\n1. Domain DNS is not pointing to this server';
+        errorMessage += '\n2. Port 80 is not accessible from the internet (check firewall/router)';
+        errorMessage += '\n3. Nginx configuration issue preventing challenge verification';
+        errorMessage += '\n\nCheck the certbot logs: sudo tail -100 /var/log/letsencrypt/letsencrypt.log';
+      }
+
+      throw new Error(errorMessage);
     }
 
-    logger.info('SSL certificate obtained');
+    logger.info('SSL certificate obtained successfully', { domain });
   }
 
   /**
@@ -1780,6 +2544,22 @@ server {
     const nodePath = nodeCheck.stdout.trim() || '/usr/bin/node';
     logger.info('Using node path for service', { nodePath });
     
+    // Prepare Real-Debrid token - trim whitespace and validate
+    const rdToken = this.options.config.secrets.realDebridToken?.trim() || '';
+    const hasRdToken = rdToken.length > 0;
+    
+    if (!hasRdToken) {
+      logger.warn('Real-Debrid token is missing or empty - addon will show as disconnected', {
+        hasToken: !!this.options.config.secrets.realDebridToken,
+        tokenLength: this.options.config.secrets.realDebridToken?.length || 0,
+      });
+    } else {
+      logger.info('Real-Debrid token configured for service', { 
+        tokenLength: rdToken.length,
+        tokenPrefix: rdToken.substring(0, 4) + '...',
+      });
+    }
+    
     const serviceConfig = `
 [Unit]
 Description=Stremio Private Addon: ${addonName}
@@ -1796,7 +2576,7 @@ StandardOutput=journal
 StandardError=journal
 Environment=NODE_ENV=production
 Environment=PORT=${port}
-Environment=RD_API_TOKEN=${this.options.config.secrets.realDebridToken || ''}
+Environment=RD_API_TOKEN=${rdToken}
 Environment=ADDON_PASSWORD=${this.options.config.addon.password}
 Environment=ADDON_DOMAIN=${domain}
 Environment=TORRENT_LIMIT=${this.options.config.addon.torrentLimit}
@@ -1808,8 +2588,22 @@ ${this.options.config.addon.maxConcurrency ? `Environment=MAX_CONCURRENCY=${this
 WantedBy=multi-user.target
 `;
 
-    // Write service file
-    const servicePath = this.options.config.paths.serviceFile;
+    // Determine service file path - use config path if available, otherwise generate from service name
+    // CRITICAL: Ensure service file path matches service name to avoid "Unit not found" errors
+    let servicePath = this.options.config.paths.serviceFile;
+    if (!servicePath || !servicePath.endsWith(`${serviceName}.service`)) {
+      // Generate path from service name to ensure consistency
+      servicePath = `/etc/systemd/system/${serviceName}.service`;
+      logger.warn('Service file path mismatch detected, using generated path', {
+        configPath: this.options.config.paths.serviceFile,
+        generatedPath: servicePath,
+        serviceName,
+      });
+      // Update config path for consistency
+      this.options.config.paths.serviceFile = servicePath;
+    }
+    
+    logger.info('Creating service file', { serviceName, servicePath });
     // Use temp file approach to avoid permission issues (same pattern as updateServiceFile)
     if (this.ssh) {
       // Remote: write via SSH
@@ -1827,15 +2621,38 @@ WantedBy=multi-user.target
       await execAsync(`sudo mv ${tempPath} ${servicePath}`);
     }
 
-    // Reload systemd
-    await this.execSudo('systemctl daemon-reload');
+    // Verify service file was created successfully
+    const verifyResult = await this.execCommand(`test -f "${servicePath}" && echo "EXISTS" || echo "MISSING"`);
+    if (verifyResult.stdout.includes('MISSING')) {
+      throw new Error(`Service file was not created at ${servicePath}. Check permissions and disk space.`);
+    }
+    logger.info('Service file created and verified', { servicePath });
+
+    // Reload systemd daemon to recognize the new service
+    logger.info('Reloading systemd daemon', { serviceName });
+    const reloadResult = await this.execSudo('systemctl daemon-reload');
+    if (reloadResult.code !== 0) {
+      throw new Error(`Failed to reload systemd daemon: ${reloadResult.stderr || reloadResult.stdout}`);
+    }
+
+    // Verify systemd recognizes the service after reload
+    const verifyServiceResult = await this.execCommand(`systemctl list-unit-files | grep -q "^${serviceName}.service" && echo "FOUND" || echo "NOT_FOUND"`);
+    if (verifyServiceResult.stdout.includes('NOT_FOUND')) {
+      logger.error('Service not recognized by systemd after reload', {
+        serviceName,
+        servicePath,
+        reloadOutput: reloadResult.stdout + reloadResult.stderr,
+      });
+      throw new Error(`Service '${serviceName}' was created but systemd does not recognize it. Service file: ${servicePath}`);
+    }
+    logger.info('Service recognized by systemd', { serviceName });
 
     // Enable service
     if (this.options.config.features.autoStart) {
       await this.execSudo(`systemctl enable ${serviceName}`);
     }
 
-    logger.info('Systemd service created', { serviceName });
+    logger.info('Systemd service created successfully', { serviceName, servicePath });
   }
 
   /**
@@ -2027,7 +2844,30 @@ echo url="https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}
   }
 
   /**
-   * Cleanup temporary files
+   * Cleanup temporary files only (called after successful installation)
+   */
+  private async cleanupTemporaryFiles(): Promise<void> {
+    logger.info('Cleaning up temporary files');
+
+    try {
+      // Remove any temporary files only (not the installed addon)
+      const serviceName = this.getServiceName();
+      await this.execCommand(`rm -f /tmp/${serviceName}-*`);
+      await this.execCommand(`rm -f /tmp/stremio-addon-install.*`);
+      await this.execCommand(`rm -f /tmp/stremio-addon-nginx.*.conf`);
+      await this.execCommand(`rm -f /tmp/server.js.*`);
+      
+      logger.info('Temporary files cleaned up');
+    } catch (error) {
+      logger.error('Error during temporary file cleanup', error);
+      // Don't throw - cleanup errors shouldn't prevent successful installation
+    }
+
+    logger.info('Temporary file cleanup complete');
+  }
+
+  /**
+   * Cleanup after installation failure (removes installed addon)
    */
   private async cleanup(): Promise<void> {
     logger.info('Cleaning up after installation failure');

@@ -82,6 +82,18 @@ export interface InstallationResult {
 export type ProgressCallback = (progress: InstallationProgress) => void;
 
 /**
+ * SSL Certificate information
+ */
+export interface CertificateInfo {
+  domain: string;
+  expiryDate: Date;
+  certificatePath: string;
+  privateKeyPath: string;
+  isValid: boolean;
+  daysUntilExpiry: number;
+}
+
+/**
  * Installation options
  */
 export interface InstallationOptions {

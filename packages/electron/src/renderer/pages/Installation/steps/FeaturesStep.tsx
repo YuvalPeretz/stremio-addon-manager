@@ -3,7 +3,7 @@
  * Select which features to enable
  */
 
-import { Form, Switch, Button, Flex, Typography, Card, InputNumber, Select } from "antd";
+import { Form, Switch, Button, Flex, Typography, Card, InputNumber, Select, Input } from "antd";
 
 const { Title, Text } = Typography;
 
@@ -42,6 +42,7 @@ function FeaturesStep({ value, onChange, onNext, onBack }: FeaturesStepProps) {
           retention: values.backupsRetention || 7,
         },
         ssl: true, // Always true
+        sslEmail: values.sslEmail, // Email for Let's Encrypt
         duckdnsUpdater: values.duckdnsUpdater,
         autoStart: values.autoStart,
       };
@@ -78,6 +79,7 @@ function FeaturesStep({ value, onChange, onNext, onBack }: FeaturesStepProps) {
           backupsEnabled: true,
           backupsFrequency: "weekly",
           backupsRetention: 7,
+          sslEmail: value?.sslEmail || "",
           duckdnsUpdater: false,
           autoStart: true,
           ...value,
@@ -177,6 +179,22 @@ function FeaturesStep({ value, onChange, onNext, onBack }: FeaturesStepProps) {
                   </Flex>
                 )
               }
+            </Form.Item>
+          </Flex>
+        </Card>
+
+        <Card title="SSL/HTTPS" size="small">
+          <Flex vertical gap={16}>
+            <Form.Item
+              label="Email Address for SSL Certificate"
+              name="sslEmail"
+              rules={[
+                { required: true, message: "Email address is required for Let's Encrypt certificate registration" },
+                { type: "email", message: "Please enter a valid email address" },
+              ]}
+              help="This email will be used for Let's Encrypt certificate registration and renewal notifications"
+            >
+              <Input type="email" placeholder="your-email@example.com" />
             </Form.Item>
           </Flex>
         </Card>
