@@ -2,6 +2,7 @@
   "name": "@stremio-addon-manager/electron",
   "version": "1.0.0",
   "description": "Electron GUI for Stremio Addon Manager",
+  "author": "Stremio Addon Manager Team",
   "main": "dist/src/main/index.js",
   "type": "module",
   "exports": {
@@ -47,6 +48,7 @@
   "build": {
     "appId": "com.stremio.addon.manager",
     "productName": "Stremio Addon Manager",
+    "electronVersion": "28.0.0",
     "directories": {
       "output": "release"
     },
@@ -55,25 +57,27 @@
       "package.json",
       "resources/**/*"
     ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "identity": null
+    },
     "win": {
       "target": [
         "nsis"
-      ],
-      "icon": "assets/icon.ico"
-    },
-    "mac": {
-      "target": [
-        "dmg"
-      ],
-      "icon": "assets/icon.icns"
+      ]
     },
     "linux": {
       "target": [
         "AppImage",
         "deb"
       ],
-      "icon": "assets/icon.png",
       "category": "Utility"
-    }
+    },
+    "afterSign": "scripts/sign.js"
   }
 }
