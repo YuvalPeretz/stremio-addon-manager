@@ -52,15 +52,15 @@ export function matchesEpisode(title: string | null | undefined, season: number,
   // Common patterns to match
   const patterns = [
     // S06E03, S6E3
-    new RegExp(`[s\\s]${seasonPadded}[e\\s]${episodePadded}`, "i"),
-    new RegExp(`[s\\s]${seasonStr}[e\\s]${episodeStr}`, "i"),
+    new RegExp(`[s]${seasonPadded}[e]${episodePadded}`, "i"),
+    new RegExp(`[s]${seasonStr}[e]${episodeStr}`, "i"),
     // 6x03, 06x03
     new RegExp(`\\b${seasonStr}x${episodePadded}\\b`, "i"),
     new RegExp(`\\b${seasonPadded}x${episodePadded}\\b`, "i"),
     // Season 6 Episode 3
     new RegExp(`season\\s*${seasonStr}\\s*episode\\s*${episodeStr}`, "i"),
     // E03 (episode only - less reliable, but sometimes used)
-    new RegExp(`\\b[e\\s]${episodePadded}\\b`, "i"),
+    new RegExp(`\\b[e]${episodePadded}\\b`, "i"),
   ];
 
   // Check if any pattern matches
@@ -87,7 +87,7 @@ export function getEpisodeMatchScore(title: string | null | undefined, season: n
   let score = 0;
 
   // Exact matches get higher scores
-  if (new RegExp(`[s\\s]${seasonPadded}[e\\s]${episodePadded}`, "i").test(title)) {
+  if (new RegExp(`[s]${seasonPadded}[e]${episodePadded}`, "i").test(title)) {
     score += 10; // S06E03 format
   }
   if (new RegExp(`\\b${seasonPadded}x${episodePadded}\\b`, "i").test(title)) {
@@ -96,7 +96,7 @@ export function getEpisodeMatchScore(title: string | null | undefined, season: n
   if (new RegExp(`season\\s*${seasonStr}\\s*episode\\s*${episodeStr}`, "i").test(title)) {
     score += 8; // Season 6 Episode 3
   }
-  if (new RegExp(`[s\\s]${seasonStr}[e\\s]${episodeStr}`, "i").test(title)) {
+  if (new RegExp(`[s]${seasonStr}[e]${episodeStr}`, "i").test(title)) {
     score += 7; // S6E3 format
   }
   if (new RegExp(`\\b${seasonStr}x${episodePadded}\\b`, "i").test(title)) {
@@ -104,7 +104,7 @@ export function getEpisodeMatchScore(title: string | null | undefined, season: n
   }
 
   // Penalize if title contains other episodes (multi-episode packs)
-  const otherEpisodePattern = new RegExp(`[s\\s]\\d+[e\\s]\\d+`, "gi");
+  const otherEpisodePattern = new RegExp(`[s]\\d+[e]\\d+`, "gi");
   const matches = title.match(otherEpisodePattern);
   if (matches && matches.length > 1) {
     score -= 5; // Multi-episode torrents are less reliable
@@ -151,7 +151,7 @@ export function findMatchingFile(
     let score = 0;
 
     // Exact matches get highest scores
-    if (new RegExp(`[s\\s]${seasonPadded}[e\\s]${episodePadded}`, "i").test(filename)) {
+    if (new RegExp(`[s]${seasonPadded}[e]${episodePadded}`, "i").test(filename)) {
       score += 10; // S06E03 format
     }
     if (new RegExp(`\\b${seasonPadded}x${episodePadded}\\b`, "i").test(filename)) {
@@ -160,7 +160,7 @@ export function findMatchingFile(
     if (new RegExp(`season\\s*${seasonStr}\\s*episode\\s*${episodeStr}`, "i").test(filename)) {
       score += 8; // Season 6 Episode 3
     }
-    if (new RegExp(`[s\\s]${seasonStr}[e\\s]${episodeStr}`, "i").test(filename)) {
+    if (new RegExp(`[s]${seasonStr}[e]${episodeStr}`, "i").test(filename)) {
       score += 7; // S6E3 format
     }
     if (new RegExp(`\\b${seasonStr}x${episodePadded}\\b`, "i").test(filename)) {
@@ -168,7 +168,7 @@ export function findMatchingFile(
     }
 
     // Penalize files that match other episodes (check if filename contains episode patterns that don't match)
-    const otherEpisodePattern = new RegExp(`[s\\s](\\d+)[e\\s](\\d+)`, "gi");
+    const otherEpisodePattern = new RegExp(`[s](\\d+)[e](\\d+)`, "gi");
     const matches = [...filename.matchAll(otherEpisodePattern)];
     if (matches.length > 0) {
       for (const match of matches) {

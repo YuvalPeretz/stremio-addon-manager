@@ -110,6 +110,30 @@ const api = {
     getRecent: (limit?: number) => ipcRenderer.invoke("profile:getRecent", limit),
     test: (id: string) => ipcRenderer.invoke("profile:test", id),
   },
+
+  // Update Management
+  update: {
+    check: (addonId?: string) => ipcRenderer.invoke("update:check", addonId),
+    addon: (addonId: string, options?: unknown) => ipcRenderer.invoke("update:addon", addonId, options),
+    multiple: (addonIds: string[], options?: unknown) => ipcRenderer.invoke("update:multiple", addonIds, options),
+    rollback: (addonId: string, options?: unknown) => ipcRenderer.invoke("update:rollback", addonId, options),
+    listBackups: (addonId: string) => ipcRenderer.invoke("update:list-backups", addonId),
+    history: (addonId: string) => ipcRenderer.invoke("update:history", addonId),
+    checkerStatus: () => ipcRenderer.invoke("update:checker-status"),
+    checkNow: () => ipcRenderer.invoke("update:check-now"),
+    onProgress: (callback: (data: { addonId: string; progress: unknown }) => void) => {
+      ipcRenderer.on("update:progress", (_event, data) => callback(data));
+    },
+    onUpdatesAvailable: (callback: (data: { count: number; updates: unknown[] }) => void) => {
+      ipcRenderer.on("updates-available", (_event, data) => callback(data));
+    },
+    removeProgressListener: () => {
+      ipcRenderer.removeAllListeners("update:progress");
+    },
+    removeUpdatesAvailableListener: () => {
+      ipcRenderer.removeAllListeners("updates-available");
+    },
+  },
 };
 
 // Expose API to renderer process with comprehensive error handling

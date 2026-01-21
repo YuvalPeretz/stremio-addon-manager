@@ -28,6 +28,8 @@ import {
   ConnectionProfileManager,
   type InstallationProgress,
 } from "@stremio-addon-manager/core";
+import { initializeUpdateChecker } from "./update-checker.js";
+import { registerUpdateHandlers } from "./update-ipc.js";
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -238,6 +240,14 @@ app.on("ready", () => {
   registerCustomProtocol();
   createWindow();
   setupIPC();
+  
+  // Initialize update checker after window is created
+  if (mainWindow) {
+    initializeUpdateChecker(mainWindow, {
+      enabled: true,
+      intervalMs: 24 * 60 * 60 * 1000, // Check every 24 hours
+    });
+  }
 });
 
 app.on("window-all-closed", () => {
@@ -256,6 +266,9 @@ app.on("activate", () => {
  * Setup IPC handlers for communication with renderer process
  */
 function setupIPC() {
+  // Register update handlers
+  registerUpdateHandlers();
+  
   // OS Detection
   ipcMain.handle("os:detect", async () => {
     try {

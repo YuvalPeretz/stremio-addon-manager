@@ -80,6 +80,20 @@ export interface ElectronAPI {
     getRecent: (limit?: number) => Promise<{ success: boolean; data?: unknown[]; error?: string }>;
     test: (id: string) => Promise<{ success: boolean; data?: boolean; error?: string }>;
   };
+  update: {
+    check: (addonId?: string) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+    addon: (addonId: string, options?: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+    multiple: (addonIds: string[], options?: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+    rollback: (addonId: string, options?: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+    listBackups: (addonId: string) => Promise<{ success: boolean; data?: unknown[]; error?: string }>;
+    history: (addonId: string) => Promise<{ success: boolean; data?: unknown[]; error?: string }>;
+    checkerStatus: () => Promise<{ success: boolean; data?: { enabled: boolean }; error?: string }>;
+    checkNow: () => Promise<{ success: boolean; data?: unknown[]; error?: string }>;
+    onProgress: (callback: (data: { addonId: string; progress: unknown }) => void) => void;
+    onUpdatesAvailable: (callback: (data: { count: number; updates: unknown[] }) => void) => void;
+    removeProgressListener: () => void;
+    removeUpdatesAvailableListener: () => void;
+  };
 }
 
 declare global {

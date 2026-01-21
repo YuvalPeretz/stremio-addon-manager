@@ -1,0 +1,142 @@
+@import '../../styles/variables.scss';
+
+.notification {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  width: 400px;
+  max-width: calc(100vw - 40px);
+  background: var(--background-secondary, #1e1e1e);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  z-index: 999;
+  animation: slideIn 0.3s ease-out;
+  border: 1px solid var(--border-color, #333);
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateX(420px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.header {
+  padding: 16px;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  border-bottom: 1px solid var(--border-color, #333);
+}
+
+.icon {
+  font-size: 24px;
+  flex-shrink: 0;
+}
+
+.title {
+  flex: 1;
+
+  h3 {
+    margin: 0 0 4px 0;
+    font-size: 16px;
+    color: var(--text-primary, #fff);
+    font-weight: 600;
+  }
+
+  p {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-secondary, #999);
+  }
+}
+
+.closeButton {
+  background: none;
+  border: none;
+  font-size: 24px;
+  color: var(--text-secondary, #999);
+  cursor: pointer;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.2s;
+  flex-shrink: 0;
+
+  &:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary, #fff);
+  }
+}
+
+.updates {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.updateItem {
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  transition: background 0.2s;
+
+  &:not(:last-child) {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  }
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.03);
+  }
+}
+
+.updateInfo {
+  flex: 1;
+  min-width: 0;
+
+  .addonName {
+    display: block;
+    color: var(--text-primary, #fff);
+    font-weight: 500;
+    font-size: 14px;
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .versions {
+    display: block;
+    color: var(--text-secondary, #999);
+    font-size: 12px;
+  }
+}
+
+.updateButton {
+  padding: 6px 16px;
+  background: var(--accent-color, #7b2cbf);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+
+  &:hover {
+    background: var(--accent-dark, #6a1ba8);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(123, 44, 191, 0.3);
+  }
+}
+

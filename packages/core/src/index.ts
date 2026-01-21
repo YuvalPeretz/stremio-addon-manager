@@ -47,15 +47,26 @@ export { logger, initLogger, getLogger, LogLevel } from "./utils/index.js";
 export type { Logger, LoggerConfig } from "./utils/index.js";
 
 // Export Installation module
-export { InstallationManager } from "./installation/index.js";
+export { InstallationManager, UpdateManager } from "./installation/index.js";
 export type {
   InstallationOptions,
   InstallationResult,
   InstallationProgress,
   PrerequisiteCheck,
   ProgressCallback,
+  UpdateOptions,
+  UpdateResult,
+  UpdateInfo,
+  PreUpdateCheck,
+  UpdateProgress,
+  RollbackOptions,
+  RollbackResult,
+  BackupOptions,
+  BackupEntry,
+  UpdateHistoryEntry,
+  VersionComparison,
 } from "./installation/index.js";
-export { InstallationStep, StepStatus } from "./installation/index.js";
+export { InstallationStep, StepStatus, UpdateStep, UpdateStepStatus } from "./installation/index.js";
 
 // Export Server module
 export { ServerDetector, ServerConnection, ConnectionProfileManager } from "./server/index.js";

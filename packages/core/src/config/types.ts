@@ -141,6 +141,33 @@ export interface InstallationConfig {
 }
 
 /**
+ * Update history entry for addon
+ */
+export interface AddonUpdateHistoryEntry {
+  timestamp: Date;
+  fromVersion: string;
+  toVersion: string;
+  success: boolean;
+  duration: number;                   // milliseconds
+  backupId?: string;
+  rollbackId?: string;               // If this was a rollback
+  error?: string;                     // Error message if failed
+  initiatedBy?: 'user' | 'auto';     // Who initiated the update
+}
+
+/**
+ * Backup entry for addon
+ */
+export interface AddonBackupEntry {
+  id: string;                         // backup-20260121-143022
+  timestamp: Date;
+  version: string;                    // Version at time of backup
+  path: string;                       // Path to backup archive
+  size: number;                       // Backup size in bytes
+  type: 'pre-update' | 'manual' | 'scheduled';
+}
+
+/**
  * Addon metadata stored in registry
  */
 export interface AddonMetadata {
@@ -153,6 +180,16 @@ export interface AddonMetadata {
   domain: string;
   createdAt: string;
   updatedAt: string;
+  
+  // Version tracking
+  version?: string;                   // Current installed version
+  installedAt?: string;               // When first installed (ISO date string)
+  lastUpdated?: string;               // Last update timestamp (ISO date string)
+  updateHistory?: AddonUpdateHistoryEntry[];
+  
+  // Backup tracking
+  backups?: AddonBackupEntry[];
+  maxBackups?: number;                // Keep last N backups (default: 5)
 }
 
 /**

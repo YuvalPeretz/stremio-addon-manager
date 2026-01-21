@@ -14,10 +14,14 @@ import Logs from "./pages/Logs/Logs";
 import Connect from "./pages/Connect/Connect";
 import AddonManagement from "./pages/AddonManagement/AddonManagement";
 import EnvironmentVariables from "./pages/EnvironmentVariables/EnvironmentVariables";
+import { UpdateDialog } from "./components/UpdateDialog/UpdateDialog";
+import { UpdateNotification } from "./components/UpdateNotification/UpdateNotification";
 
 function App() {
   return (
     <JotaiProvider>
+      <UpdateDialog />
+      <UpdateNotification />
       <ConfigProvider
         theme={{
           algorithm: theme.darkAlgorithm,
