@@ -65,7 +65,7 @@ export function registerUpdateHandlers(): void {
   /**
    * Update a specific addon
    */
-  ipcMain.handle('update:addon', async (event, addonId: string, options: UpdateOptions = {}) => {
+  ipcMain.handle('update:addon', async (_event, addonId: string, options: UpdateOptions = {}) => {
     try {
       logger.info('Starting addon update via IPC', { addonId, options });
 
@@ -121,7 +121,7 @@ export function registerUpdateHandlers(): void {
   /**
    * Update multiple addons
    */
-  ipcMain.handle('update:multiple', async (event, addonIds: string[], options: UpdateOptions = {}) => {
+  ipcMain.handle('update:multiple', async (_event, addonIds: string[], options: UpdateOptions = {}) => {
     try {
       logger.info('Starting multiple addon updates via IPC', { addonIds, options });
 
@@ -195,7 +195,7 @@ export function registerUpdateHandlers(): void {
   /**
    * Rollback an addon
    */
-  ipcMain.handle('update:rollback', async (event, addonId: string, options: RollbackOptions = {}) => {
+  ipcMain.handle('update:rollback', async (_event, addonId: string, options: RollbackOptions = {}) => {
     try {
       logger.info('Starting addon rollback via IPC', { addonId, options });
 
@@ -296,7 +296,8 @@ export function registerUpdateHandlers(): void {
    */
   ipcMain.handle('update:checker-status', async () => {
     try {
-      const checker = getUpdateChecker();
+      // Just check that the checker is available
+      getUpdateChecker();
       // Return basic status (we don't expose internal state)
       return { 
         success: true, 

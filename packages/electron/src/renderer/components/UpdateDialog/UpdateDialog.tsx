@@ -34,6 +34,12 @@ export const UpdateDialog: React.FC = () => {
 
   // Listen for update progress
   useEffect(() => {
+    // Check if Electron API is available (won't be in dev mode with HTTP URLs)
+    if (!window.electron?.update?.onProgress) {
+      console.warn('Electron update API not available (running in dev mode?)');
+      return;
+    }
+
     const handleProgress = (data: { addonId: string; progress: any }) => {
       if (data.addonId === selectedAddonId) {
         setUpdateProgress(data.progress);
@@ -49,6 +55,11 @@ export const UpdateDialog: React.FC = () => {
 
   const fetchUpdateInfo = async () => {
     if (!selectedAddonId) return;
+
+    if (!window.electron?.update?.check) {
+      setError('Electron API not available. Please run the built app instead of dev server.');
+      return;
+    }
 
     setLoading(true);
     setError(null);
@@ -69,6 +80,11 @@ export const UpdateDialog: React.FC = () => {
 
   const handleUpdate = async () => {
     if (!selectedAddonId) return;
+
+    if (!window.electron?.update?.addon) {
+      setError('Electron API not available. Please run the built app instead of dev server.');
+      return;
+    }
 
     setUpdatingAddon(selectedAddonId);
     setUpdateProgress(null);

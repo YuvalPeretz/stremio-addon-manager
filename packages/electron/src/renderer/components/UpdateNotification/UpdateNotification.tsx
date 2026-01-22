@@ -23,6 +23,12 @@ export const UpdateNotification: React.FC = () => {
 
   // Listen for updates available event
   useEffect(() => {
+    // Check if Electron API is available (won't be in dev mode with HTTP URLs)
+    if (!window.electron?.update?.onUpdatesAvailable) {
+      console.warn('Electron update API not available (running in dev mode?)');
+      return;
+    }
+
     const handleUpdatesAvailable = (data: { count: number; updates: any[] }) => {
       setAvailableUpdates(data.updates);
       setShowNotification(true);
