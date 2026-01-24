@@ -61,7 +61,7 @@ function Updates() {
 
     for (const addon of addonList) {
       try {
-        if (!window.electron?.update?.checkForUpdates) {
+        if (!window.electron?.update?.check) {
           console.warn("Update API not available");
           updatedList.push({
             ...addon,
@@ -71,7 +71,7 @@ function Updates() {
           continue;
         }
 
-        const result = await window.electron.update.checkForUpdates(addon.id);
+        const result = await window.electron.update.check(addon.id);
         
         if (result.success && result.data) {
           updatedList.push({
@@ -104,7 +104,7 @@ function Updates() {
   }
 
   async function handleUpdateAddon(addonId: string, forceUpdate = false) {
-    if (!window.electron?.update?.updateAddon) {
+    if (!window.electron?.update?.addon) {
       message.error("Update API not available");
       return;
     }
@@ -112,7 +112,7 @@ function Updates() {
     setUpdatingAddon(addonId);
     
     try {
-      const result = await window.electron.update.updateAddon(addonId, {
+      const result = await window.electron.update.addon(addonId, {
         skipBackup: false,
         restartService: true,
         forceUpdate,
@@ -172,7 +172,7 @@ function Updates() {
       }
     }
 
-    if (!window.electron?.update?.updateMultiple) {
+    if (!window.electron?.update?.multiple) {
       message.error("Update API not available");
       return;
     }
@@ -193,7 +193,7 @@ function Updates() {
       okButtonProps: forceUpdate ? { danger: true } : undefined,
       onOk: async () => {
         try {
-          const result = await window.electron.update.updateMultiple(addonsToUpdate, {
+          const result = await window.electron.update.multiple(addonsToUpdate, {
             skipBackup: false,
             restartService: true,
             forceUpdate,
