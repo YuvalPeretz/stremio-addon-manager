@@ -103,7 +103,7 @@ function Updates() {
     setChecking(false);
   }
 
-  async function handleUpdateAddon(addonId: string) {
+  async function handleUpdateAddon(addonId: string, forceUpdate = false) {
     if (!window.electron?.update?.updateAddon) {
       message.error("Update API not available");
       return;
@@ -115,10 +115,11 @@ function Updates() {
       const result = await window.electron.update.updateAddon(addonId, {
         skipBackup: false,
         restartService: true,
+        forceUpdate,
       });
 
       if (result.success) {
-        message.success(`Addon ${addonId} updated successfully!`);
+        message.success(`Addon ${addonId} ${forceUpdate ? 'force ' : ''}updated successfully!`);
         // Refresh the update info
         await checkAllUpdates();
       } else {
@@ -132,12 +133,43 @@ function Updates() {
     }
   }
 
-  async function handleUpdateAll() {
-    const addonsToUpdate = addonsWithUpdateInfo.filter(a => a.updateAvailable).map(a => a.id);
+  async function handleForceUpdate(addonId: string) {
+    Modal.confirm({
+      title: "Force Update",
+      content: (
+        <div>
+          <p>This will force reinstall all packages to the latest version, even if already up to date.</p>
+          <p><strong>Use this if:</strong></p>
+          <ul>
+            <li>Version detection is not working correctly</li>
+            <li>You want to ensure all packages are at the latest version</li>
+            <li>Files may have been corrupted or modified</li>
+          </ul>
+          <p style={{ marginTop: 12, color: "#faad14" }}>
+            <strong>Note:</strong> A backup will be created before the update.
+          </p>
+        </div>
+      ),
+      onOk: () => handleUpdateAddon(addonId, true),
+      okText: "Force Update",
+      okButtonProps: { danger: true },
+    });
+  }
+
+  async function handleUpdateAll(forceUpdate = false) {
+    let addonsToUpdate: string[];
     
-    if (addonsToUpdate.length === 0) {
-      message.info("All addons are up to date");
-      return;
+    if (forceUpdate) {
+      // Force update all addons
+      addonsToUpdate = addonsWithUpdateInfo.map(a => a.id);
+    } else {
+      // Only update addons with updates available
+      addonsToUpdate = addonsWithUpdateInfo.filter(a => a.updateAvailable).map(a => a.id);
+      
+      if (addonsToUpdate.length === 0) {
+        message.info("All addons are up to date");
+        return;
+      }
     }
 
     if (!window.electron?.update?.updateMultiple) {
@@ -146,17 +178,29 @@ function Updates() {
     }
 
     Modal.confirm({
-      title: "Update All Addons",
-      content: `Are you sure you want to update ${addonsToUpdate.length} addon(s)?`,
+      title: forceUpdate ? "Force Update All Addons" : "Update All Addons",
+      content: forceUpdate ? (
+        <div>
+          <p>This will force reinstall all packages to the latest version for <strong>{addonsToUpdate.length}</strong> addon(s).</p>
+          <p style={{ marginTop: 12, color: "#faad14" }}>
+            <strong>Note:</strong> Backups will be created before each update.
+          </p>
+        </div>
+      ) : (
+        `Are you sure you want to update ${addonsToUpdate.length} addon(s)?`
+      ),
+      okText: forceUpdate ? "Force Update All" : "Update All",
+      okButtonProps: forceUpdate ? { danger: true } : undefined,
       onOk: async () => {
         try {
           const result = await window.electron.update.updateMultiple(addonsToUpdate, {
             skipBackup: false,
             restartService: true,
+            forceUpdate,
           });
 
           if (result.success) {
-            message.success("All addons updated successfully!");
+            message.success(`All addons ${forceUpdate ? 'force ' : ''}updated successfully!`);
             await checkAllUpdates();
           } else {
             message.error(result.error || "Batch update failed");
@@ -214,9 +258,19 @@ function Updates() {
       title: "Current Version",
       dataIndex: "currentVersion",
       key: "currentVersion",
-      render: (version?: string) => (
-        <Text code>{version || "Unknown"}</Text>
-      ),
+      render: (version?: string, record: AddonUpdateInfo) => {
+        if (!version || version === "N/A") {
+          return (
+            <Tooltip title="Version could not be detected. Use 'Force Update' to reinstall.">
+              <Space>
+                <Text code type="warning">Unknown</Text>
+                <FiAlertCircle color="#faad14" size={14} />
+              </Space>
+            </Tooltip>
+          );
+        }
+        return <Text code>{version}</Text>;
+      },
     },
     {
       title: "Latest Version",
@@ -249,19 +303,30 @@ function Updates() {
     {
       title: "Actions",
       key: "actions",
+      width: 300,
       render: (_: unknown, record: AddonUpdateInfo) => (
-        <Space>
+        <Space size="small" wrap>
           {record.updateAvailable && (
             <Button
               type="primary"
               size="small"
               icon={<FiDownload />}
               loading={updatingAddon === record.id}
-              onClick={() => handleUpdateAddon(record.id)}
+              onClick={() => handleUpdateAddon(record.id, false)}
             >
               Update
             </Button>
           )}
+          <Tooltip title="Force reinstall packages to latest version">
+            <Button
+              size="small"
+              icon={<FiRefreshCw />}
+              loading={updatingAddon === record.id}
+              onClick={() => handleForceUpdate(record.id)}
+            >
+              Force Update
+            </Button>
+          </Tooltip>
           {record.updateHistory && record.updateHistory.length > 0 && (
             <Tooltip title="Rollback to previous version">
               <Button
@@ -296,11 +361,17 @@ function Updates() {
             <Button
               type="primary"
               icon={<FiDownload />}
-              onClick={handleUpdateAll}
+              onClick={() => handleUpdateAll(false)}
             >
               Update All ({updatesAvailable})
             </Button>
           )}
+          <Button
+            icon={<FiRefreshCw />}
+            onClick={() => handleUpdateAll(true)}
+          >
+            Force Update All
+          </Button>
         </Space>
       </Flex>
 
@@ -318,6 +389,27 @@ function Updates() {
           type="info"
           message={`${updatesAvailable} Update${updatesAvailable > 1 ? 's' : ''} Available`}
           description="New versions of addon packages (core, CLI, addon-server) are available for your addons."
+          showIcon
+        />
+      )}
+
+      {addonsWithUpdateInfo.some(a => !a.currentVersion || a.currentVersion === "N/A") && (
+        <Alert
+          type="warning"
+          message="Version Detection Issue"
+          description={
+            <div>
+              <p>Some addons have unknown versions. This can happen if:</p>
+              <ul style={{ marginBottom: 0, paddingLeft: 20 }}>
+                <li>The addon was installed manually without version tracking</li>
+                <li>The package.json file is missing or corrupted</li>
+                <li>The addon is running on a remote server</li>
+              </ul>
+              <p style={{ marginTop: 8, marginBottom: 0 }}>
+                <strong>Solution:</strong> Use the "Force Update" button to reinstall packages to the latest version.
+              </p>
+            </div>
+          }
           showIcon
         />
       )}
