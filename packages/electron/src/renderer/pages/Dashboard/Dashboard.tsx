@@ -105,7 +105,9 @@ function Dashboard() {
     }
   }
 
-  if (!configExists) {
+  // Only show "no config" message if there's also no selected addon
+  // (i.e., nothing registered at all)
+  if (!configExists && !selectedAddon) {
     return (
       <Flex vertical gap={24} className={styles.dashboard}>
         <Title level={2}>Welcome to Stremio Addon Manager</Title>
@@ -180,29 +182,46 @@ function Dashboard() {
       </Card>
 
       {/* Addon Information Card */}
-      {config && (
+      {(config || selectedAddon) && (
         <Card title="Addon Information">
           <Flex vertical gap={12}>
+            {!config && (
+              <Alert
+                type="info"
+                message="Remote Addon"
+                description="This addon is registered but doesn't have a local configuration file. You can still control its service."
+                showIcon
+                style={{ marginBottom: 12 }}
+              />
+            )}
             <Flex justify="space-between">
               <Text strong>Addon Name</Text>
-              <Text>{config.addon.name}</Text>
+              <Text>{config?.addon?.name || selectedAddon?.name}</Text>
             </Flex>
             <Flex justify="space-between">
               <Text strong>Domain</Text>
-              <Text copyable>{config.addon.domain}</Text>
+              <Text copyable>{config?.addon?.domain || selectedAddon?.domain}</Text>
             </Flex>
             <Flex justify="space-between">
-              <Text strong>Provider</Text>
-              <Tag>{config.addon.provider.toUpperCase()}</Tag>
+              <Text strong>Port</Text>
+              <Text>{config?.addon?.port || selectedAddon?.port}</Text>
             </Flex>
-            <Flex justify="space-between">
-              <Text strong>Torrent Limit</Text>
-              <Text>{config.addon.torrentLimit}</Text>
-            </Flex>
-            <Flex justify="space-between">
-              <Text strong>SSL Enabled</Text>
-              <Tag color={config.features.ssl ? "success" : "default"}>{config.features.ssl ? "YES" : "NO"}</Tag>
-            </Flex>
+            {config && (
+              <>
+                <Flex justify="space-between">
+                  <Text strong>Provider</Text>
+                  <Tag>{config.addon.provider.toUpperCase()}</Tag>
+                </Flex>
+                <Flex justify="space-between">
+                  <Text strong>Torrent Limit</Text>
+                  <Text>{config.addon.torrentLimit}</Text>
+                </Flex>
+                <Flex justify="space-between">
+                  <Text strong>SSL Enabled</Text>
+                  <Tag color={config.features.ssl ? "success" : "default"}>{config.features.ssl ? "YES" : "NO"}</Tag>
+                </Flex>
+              </>
+            )}
           </Flex>
         </Card>
       )}
@@ -218,14 +237,25 @@ function Dashboard() {
       </Card>
 
       {/* Install URL */}
-      {config && serviceStatus?.status === "active" && (
+      {serviceStatus?.status === "active" && (config || selectedAddon) && (
         <Alert
           message="Addon URL"
           description={
             <Flex vertical gap={8}>
-              <Paragraph copyable style={{ margin: 0 }}>
-                {`https://${config.addon.domain}/${config.addon.password}/manifest.json`}
-              </Paragraph>
+              {config?.addon?.password ? (
+                <Paragraph copyable style={{ margin: 0 }}>
+                  {`https://${config.addon.domain}/${config.addon.password}/manifest.json`}
+                </Paragraph>
+              ) : (
+                <>
+                  <Paragraph copyable style={{ margin: 0 }}>
+                    {`https://${selectedAddon?.domain}/[password]/manifest.json`}
+                  </Paragraph>
+                  <Text type="warning" style={{ fontSize: 12 }}>
+                    Replace [password] with your actual addon password
+                  </Text>
+                </>
+              )}
               <Text type="secondary">Copy this URL and paste it in Stremio to install your addon</Text>
             </Flex>
           }
