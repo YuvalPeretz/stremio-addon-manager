@@ -13,6 +13,7 @@ import {
   FiFileText,
   FiServer,
   FiGrid,
+  FiPackage,
 } from 'react-icons/fi';
 import AddonSelector from '../AddonSelector/AddonSelector';
 import styles from './Layout.module.scss';
@@ -54,6 +55,11 @@ function Layout() {
       key: '/configuration',
       icon: <FiSettings size={18} />,
       label: 'Configuration',
+    },
+    {
+      key: '/updates',
+      icon: <FiPackage size={18} />,
+      label: 'Updates',
     },
     {
       key: '/logs',

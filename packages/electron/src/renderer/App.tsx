@@ -14,6 +14,7 @@ import Logs from "./pages/Logs/Logs";
 import Connect from "./pages/Connect/Connect";
 import AddonManagement from "./pages/AddonManagement/AddonManagement";
 import EnvironmentVariables from "./pages/EnvironmentVariables/EnvironmentVariables";
+import Updates from "./pages/Updates/Updates";
 import { UpdateDialog } from "./components/UpdateDialog/UpdateDialog";
 import { UpdateNotification } from "./components/UpdateNotification/UpdateNotification";
 
@@ -62,6 +63,7 @@ function App() {
             <Route path="configuration" element={<Configuration />} />
             <Route path="environment-variables" element={<EnvironmentVariables />} />
             <Route path="service" element={<ServiceControl />} />
+            <Route path="updates" element={<Updates />} />
             <Route path="logs" element={<Logs />} />
           </Route>
         </Routes>
