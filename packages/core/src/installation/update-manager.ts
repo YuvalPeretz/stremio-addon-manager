@@ -764,33 +764,60 @@ export class UpdateManager {
     const currentFilePath = fileURLToPath(currentFileUrl);
     const currentDir = path.dirname(currentFilePath);
     
-    // In production (Electron/CLI), bundled packages are in resources/
-    // Try multiple possible locations
+    // Try multiple possible locations based on the environment
     const possiblePaths = [
-      // Electron app - resources directory
+      // === Electron Production (packaged app) ===
+      // app.asar unpacked or app directory -> resources/addon-server
+      ...(typeof process !== 'undefined' && process.versions && process.versions.electron ? [
+        // Use process.resourcesPath if available (Electron production)
+        (process as any).resourcesPath && path.join((process as any).resourcesPath, 'addon-server', 'package.json'),
+        // Or try relative to app path
+        path.resolve(currentDir, '../../../../resources/addon-server/package.json'),
+        path.resolve(currentDir, '../../../resources/addon-server/package.json'),
+      ].filter(Boolean) : []),
+      
+      // === Electron Development ===
+      // From packages/core/dist/installation -> packages/electron/resources/addon-server
+      path.resolve(currentDir, '../../../../../electron/resources/addon-server/package.json'),
+      path.resolve(currentDir, '../../../../electron/resources/addon-server/package.json'),
+      
+      // === CLI Production (bundled) ===
+      // From CLI's node_modules/@stremio-addon-manager/core/dist -> CLI's resources/addon-server
       path.resolve(currentDir, '../../../resources/addon-server/package.json'),
-      // CLI - resources directory
       path.resolve(currentDir, '../../resources/addon-server/package.json'),
-      // Development - from packages/core/dist to packages/addon-server
-      path.resolve(currentDir, '../../../addon-server/package.json'),
-      // Alternative development path
+      
+      // === Development (monorepo) ===
+      // From packages/core/dist/installation -> packages/addon-server
       path.resolve(currentDir, '../../../../addon-server/package.json'),
+      path.resolve(currentDir, '../../../addon-server/package.json'),
     ];
+
+    logger.debug('Searching for bundled addon-server package.json', {
+      currentDir,
+      isElectron: !!(process.versions && process.versions.electron),
+      resourcesPath: (process as any).resourcesPath,
+      searchingPaths: possiblePaths.length
+    });
 
     // Find the first path that exists
     for (const packagePath of possiblePaths) {
-      if (fs.existsSync(packagePath)) {
-        logger.debug('Found bundled package.json at', { path: packagePath });
+      if (packagePath && fs.existsSync(packagePath)) {
+        logger.info('Found bundled addon-server package.json', { path: packagePath });
         return packagePath;
       }
     }
 
     // If nothing found, throw error with helpful message
     logger.error('Could not find bundled addon-server package.json', { 
-      searchedPaths: possiblePaths,
-      currentDir 
+      searchedPaths: possiblePaths.filter(Boolean),
+      currentDir,
+      isElectron: !!(process.versions && process.versions.electron),
+      resourcesPath: (process as any).resourcesPath,
     });
-    throw new Error('Bundled addon-server package.json not found. Make sure addon-server is bundled in resources/');
+    throw new Error(
+      'Bundled addon-server package.json not found. ' +
+      'Make sure you run "npm run build" to bundle the packages before updating.'
+    );
   }
 
   /**
