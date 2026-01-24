@@ -7,6 +7,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { logger } from '../utils/logger.js';
 import { AddonRegistryManager } from '../config/registry-manager.js';
 import { ServiceManager } from '../service/manager.js';
@@ -68,7 +69,18 @@ export class UpdateManager {
 
     // Otherwise, try to read from package.json in addon directory
     try {
-      const packageJsonPath = path.join(addon.configPath, '../addon-server/package.json');
+      // configPath is the path to the config.json file
+      // The addon-server directory should be a sibling of the config file
+      const addonDir = path.dirname(addon.configPath);
+      const packageJsonPath = path.join(addonDir, 'addon-server', 'package.json');
+      
+      logger.debug('Reading version from package.json', { 
+        addonId, 
+        configPath: addon.configPath,
+        addonDir,
+        packageJsonPath 
+      });
+      
       const version = await this.readVersionFromPackageJson(packageJsonPath);
       
       // Update registry with the version
@@ -79,6 +91,7 @@ export class UpdateManager {
     } catch (error) {
       logger.warn('Could not read version from package.json', { 
         addonId, 
+        configPath: addon.configPath,
         error: (error as Error).message 
       });
       return '0.0.0'; // Unknown version
@@ -746,9 +759,38 @@ export class UpdateManager {
    * Get bundled package.json path
    */
   private getBundledPackageJsonPath(): string {
-    // This will be different for CLI vs Electron
-    // For now, assume we're in a development environment
-    return path.resolve(__dirname, '../../../addon-server/package.json');
+    // Get current file's directory using ES modules approach
+    const currentFileUrl = import.meta.url;
+    const currentFilePath = fileURLToPath(currentFileUrl);
+    const currentDir = path.dirname(currentFilePath);
+    
+    // In production (Electron/CLI), bundled packages are in resources/
+    // Try multiple possible locations
+    const possiblePaths = [
+      // Electron app - resources directory
+      path.resolve(currentDir, '../../../resources/addon-server/package.json'),
+      // CLI - resources directory
+      path.resolve(currentDir, '../../resources/addon-server/package.json'),
+      // Development - from packages/core/dist to packages/addon-server
+      path.resolve(currentDir, '../../../addon-server/package.json'),
+      // Alternative development path
+      path.resolve(currentDir, '../../../../addon-server/package.json'),
+    ];
+
+    // Find the first path that exists
+    for (const packagePath of possiblePaths) {
+      if (fs.existsSync(packagePath)) {
+        logger.debug('Found bundled package.json at', { path: packagePath });
+        return packagePath;
+      }
+    }
+
+    // If nothing found, throw error with helpful message
+    logger.error('Could not find bundled addon-server package.json', { 
+      searchedPaths: possiblePaths,
+      currentDir 
+    });
+    throw new Error('Bundled addon-server package.json not found. Make sure addon-server is bundled in resources/');
   }
 
   /**
