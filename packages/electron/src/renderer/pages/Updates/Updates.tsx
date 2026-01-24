@@ -43,17 +43,32 @@ interface AddonUpdateInfo extends AddonMetadata {
 }
 
 function Updates() {
-  const [addonList] = useAtom(addonListAtom);
+  const [addonList, setAddonList] = useAtom(addonListAtom);
   const [updateProgress] = useAtom(updateProgressAtom);
   const [addonsWithUpdateInfo, setAddonsWithUpdateInfo] = useState<AddonUpdateInfo[]>([]);
   const [checking, setChecking] = useState(false);
   const [updatingAddon, setUpdatingAddon] = useState<string | null>(null);
 
   useEffect(() => {
+    loadAddons();
+  }, []);
+
+  useEffect(() => {
     if (addonList.length > 0) {
       checkAllUpdates();
     }
   }, [addonList]);
+
+  async function loadAddons() {
+    try {
+      const result = await window.electron.addon.list();
+      if (result.success && result.data) {
+        setAddonList(result.data as any[]);
+      }
+    } catch (error) {
+      console.error("Failed to load addons", error);
+    }
+  }
 
   async function checkAllUpdates() {
     setChecking(true);
@@ -120,7 +135,9 @@ function Updates() {
 
       if (result.success) {
         message.success(`Addon ${addonId} ${forceUpdate ? 'force ' : ''}updated successfully!`);
-        // Refresh the update info
+        // Reload addon list from registry (to get updated version)
+        await loadAddons();
+        // Then refresh the update info
         await checkAllUpdates();
       } else {
         message.error(result.error || "Update failed");
@@ -201,6 +218,9 @@ function Updates() {
 
           if (result.success) {
             message.success(`All addons ${forceUpdate ? 'force ' : ''}updated successfully!`);
+            // Reload addon list from registry (to get updated versions)
+            await loadAddons();
+            // Then refresh the update info
             await checkAllUpdates();
           } else {
             message.error(result.error || "Batch update failed");
@@ -230,6 +250,9 @@ function Updates() {
 
           if (result.success) {
             message.success("Rollback successful!");
+            // Reload addon list from registry (to get updated version)
+            await loadAddons();
+            // Then refresh the update info
             await checkAllUpdates();
           } else {
             message.error(result.error || "Rollback failed");
