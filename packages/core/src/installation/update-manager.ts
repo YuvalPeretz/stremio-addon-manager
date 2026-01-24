@@ -881,7 +881,7 @@ export class UpdateManager {
     const remoteTarPath = `/tmp/addon-update-${Date.now()}.tar.gz`;
     logger.info('Uploading tarball to remote server', { remotePath: remoteTarPath });
     
-    await this.ssh.putFile(tempTarPath, remoteTarPath);
+    await this.ssh.transferFile(tempTarPath, remoteTarPath);
 
     // Extract tarball on remote server
     logger.info('Extracting tarball on remote server');
@@ -939,9 +939,7 @@ export class UpdateManager {
     if (this.ssh) {
       // Remote: install via SSH
       logger.info('Installing dependencies on remote server');
-      const result = await this.ssh.execCommand(`cd ${addonServerDir} && npm install --production`, {
-        cwd: addonServerDir
-      });
+      const result = await this.ssh.execCommand(`cd ${addonServerDir} && npm install --production`);
 
       if (result.code !== 0) {
         logger.error('Failed to install dependencies on remote server', { stderr: result.stderr });
