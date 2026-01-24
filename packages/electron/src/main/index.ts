@@ -189,7 +189,8 @@ function createWindow() {
 
       // For vite-plugin-electron, we need to use a custom protocol or load from file
       // The safest approach is to build the renderer and load from file in dev mode
-      const rendererPath = path.join(__dirname, "../renderer/index.html");
+      // __dirname is dist/src/main, renderer is at dist/renderer
+      const rendererPath = path.join(__dirname, "../../renderer/index.html");
       if (fs.existsSync(rendererPath)) {
         console.log("✅ Loading from built file (preload will work):", rendererPath);
         console.log("   Note: Run 'npm run build:renderer' after code changes");
@@ -208,7 +209,11 @@ function createWindow() {
     mainWindow.webContents.openDevTools();
   } else {
     // Production: Load from built file
-    mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
+    // __dirname is dist/src/main, renderer is at dist/renderer
+    const rendererPath = path.join(__dirname, "../../renderer/index.html");
+    console.log("Loading production renderer from:", rendererPath);
+    console.log("Renderer exists:", fs.existsSync(rendererPath));
+    mainWindow.loadFile(rendererPath);
   }
 
   mainWindow.on("closed", () => {
