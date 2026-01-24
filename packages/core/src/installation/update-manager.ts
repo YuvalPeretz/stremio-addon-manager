@@ -5,6 +5,8 @@
 
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
+import { execSync } from 'node:child_process';
 import { logger } from '../utils/logger.js';
 import { AddonRegistryManager } from '../config/registry-manager.js';
 import { ServiceManager } from '../service/manager.js';
@@ -784,33 +786,245 @@ export class UpdateManager {
   /**
    * Update addon files
    */
-  private async updateAddonFiles(_addon: any, _keepOldFiles: boolean): Promise<void> {
-    // TODO: Implement actual file update logic
-    logger.info('Updating addon files');
+  private async updateAddonFiles(addon: any, keepOldFiles: boolean): Promise<void> {
+    logger.info('Updating addon files', { addonId: addon.id, keepOldFiles });
+
+    // Get the addon directory (parent of config path)
+    const addonDir = path.dirname(addon.configPath);
+    const addonServerDir = path.join(addonDir, 'addon-server');
+
+    // Get bundled package path
+    const bundledPackagePath = this.getBundledPackageJsonPath();
+    const bundledDir = path.dirname(bundledPackagePath); // This is the bundled addon-server directory
+
+    logger.info('Addon paths', { addonDir, addonServerDir, bundledDir });
+
+    if (this.ssh) {
+      // Remote update via SSH
+      await this.updateRemoteAddonFiles(addonDir, bundledDir, keepOldFiles);
+    } else {
+      // Local update
+      await this.updateLocalAddonFiles(addonDir, bundledDir, keepOldFiles);
+    }
+
+    logger.info('Addon files updated successfully');
+  }
+
+  /**
+   * Update addon files locally
+   */
+  private async updateLocalAddonFiles(addonDir: string, bundledDir: string, keepOldFiles: boolean): Promise<void> {
+    const addonServerDir = path.join(addonDir, 'addon-server');
+
+    // Backup old files if requested
+    if (keepOldFiles) {
+      const oldDir = path.join(addonDir, 'addon-server.old');
+      if (fs.existsSync(addonServerDir)) {
+        logger.info('Moving old files to .old directory');
+        if (fs.existsSync(oldDir)) {
+          fs.rmSync(oldDir, { recursive: true, force: true });
+        }
+        fs.renameSync(addonServerDir, oldDir);
+      }
+    }
+
+    // Copy new files
+    logger.info('Copying new addon files', { from: bundledDir, to: addonServerDir });
+    
+    // Create addon-server directory
+    if (!fs.existsSync(addonServerDir)) {
+      fs.mkdirSync(addonServerDir, { recursive: true });
+    }
+
+    // Copy all files from bundled directory to addon directory
+    this.copyDirectorySync(bundledDir, addonServerDir);
+
+    logger.info('Local addon files updated');
+  }
+
+  /**
+   * Update addon files on remote server via SSH
+   */
+  private async updateRemoteAddonFiles(addonDir: string, bundledDir: string, keepOldFiles: boolean): Promise<void> {
+    if (!this.ssh) {
+      throw new Error('SSH connection required for remote update');
+    }
+
+    const addonServerDir = `${addonDir}/addon-server`;
+    const addonServerOldDir = `${addonDir}/addon-server.old`;
+
+    // Backup old files if requested
+    if (keepOldFiles) {
+      logger.info('Backing up old files on remote server');
+      const checkResult = await this.ssh.execCommand(`test -d ${addonServerDir} && echo "exists" || echo "not exists"`);
+      if (checkResult.stdout.trim() === 'exists') {
+        // Remove old backup if exists
+        await this.ssh.execCommand(`rm -rf ${addonServerOldDir}`);
+        // Move current to .old
+        await this.ssh.execCommand(`mv ${addonServerDir} ${addonServerOldDir}`);
+      }
+    } else {
+      // Just remove the old directory
+      await this.ssh.execCommand(`rm -rf ${addonServerDir}`);
+    }
+
+    // Create addon-server directory
+    await this.ssh.execCommand(`mkdir -p ${addonServerDir}`);
+
+    // Create a tarball of the bundled directory
+    const tempTarPath = path.join(os.tmpdir(), `addon-update-${Date.now()}.tar.gz`);
+    logger.info('Creating tarball of bundled files', { tarPath: tempTarPath });
+    
+    execSync(`tar -czf ${tempTarPath} -C ${path.dirname(bundledDir)} ${path.basename(bundledDir)}`);
+
+    // Upload tarball to remote server
+    const remoteTarPath = `/tmp/addon-update-${Date.now()}.tar.gz`;
+    logger.info('Uploading tarball to remote server', { remotePath: remoteTarPath });
+    
+    await this.ssh.putFile(tempTarPath, remoteTarPath);
+
+    // Extract tarball on remote server
+    logger.info('Extracting tarball on remote server');
+    const extractResult = await this.ssh.execCommand(
+      `tar -xzf ${remoteTarPath} -C ${addonDir} && mv ${addonDir}/${path.basename(bundledDir)} ${addonServerDir}`
+    );
+
+    if (extractResult.code !== 0) {
+      throw new Error(`Failed to extract files on remote server: ${extractResult.stderr}`);
+    }
+
+    // Cleanup temp files
+    fs.unlinkSync(tempTarPath);
+    await this.ssh.execCommand(`rm -f ${remoteTarPath}`);
+
+    logger.info('Remote addon files updated');
+  }
+
+  /**
+   * Copy directory recursively (synchronous)
+   */
+  private copyDirectorySync(src: string, dest: string): void {
+    // Create destination directory
+    if (!fs.existsSync(dest)) {
+      fs.mkdirSync(dest, { recursive: true });
+    }
+
+    // Read all items in source directory
+    const items = fs.readdirSync(src);
+
+    for (const item of items) {
+      const srcPath = path.join(src, item);
+      const destPath = path.join(dest, item);
+      const stat = fs.statSync(srcPath);
+
+      if (stat.isDirectory()) {
+        // Recursively copy subdirectory
+        this.copyDirectorySync(srcPath, destPath);
+      } else {
+        // Copy file
+        fs.copyFileSync(srcPath, destPath);
+      }
+    }
   }
 
   /**
    * Install dependencies if needed
    */
-  private async installDependenciesIfNeeded(_addon: any): Promise<void> {
-    // TODO: Implement dependency installation logic
-    logger.info('Checking dependencies');
+  private async installDependenciesIfNeeded(addon: any): Promise<void> {
+    logger.info('Installing dependencies', { addonId: addon.id });
+
+    const addonDir = path.dirname(addon.configPath);
+    const addonServerDir = path.join(addonDir, 'addon-server');
+
+    if (this.ssh) {
+      // Remote: install via SSH
+      logger.info('Installing dependencies on remote server');
+      const result = await this.ssh.execCommand(`cd ${addonServerDir} && npm install --production`, {
+        cwd: addonServerDir
+      });
+
+      if (result.code !== 0) {
+        logger.error('Failed to install dependencies on remote server', { stderr: result.stderr });
+        throw new Error(`Failed to install dependencies: ${result.stderr}`);
+      }
+
+      logger.info('Dependencies installed on remote server');
+    } else {
+      // Local: install using child_process
+      logger.info('Installing dependencies locally');
+      
+      try {
+        execSync('npm install --production', {
+          cwd: addonServerDir,
+          stdio: 'pipe',
+        });
+        logger.info('Dependencies installed locally');
+      } catch (error) {
+        logger.error('Failed to install dependencies locally', { error });
+        throw new Error(`Failed to install dependencies: ${(error as Error).message}`);
+      }
+    }
   }
 
   /**
    * Verify update
    */
-  private async verifyUpdate(_addon: any): Promise<void> {
-    // TODO: Implement update verification
-    logger.info('Verifying update');
+  private async verifyUpdate(addon: any): Promise<void> {
+    logger.info('Verifying update', { addonId: addon.id });
+
+    const addonDir = path.dirname(addon.configPath);
+    const packageJsonPath = path.join(addonDir, 'addon-server', 'package.json');
+
+    try {
+      if (this.ssh) {
+        // Remote: verify via SSH
+        const result = await this.ssh.execCommand(`cat ${packageJsonPath}`);
+        if (result.code !== 0) {
+          throw new Error('package.json not found after update');
+        }
+
+        const packageJson = JSON.parse(result.stdout);
+        logger.info('Update verified - package.json exists', { version: packageJson.version });
+      } else {
+        // Local: verify locally
+        if (!fs.existsSync(packageJsonPath)) {
+          throw new Error('package.json not found after update');
+        }
+
+        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+        logger.info('Update verified - package.json exists', { version: packageJson.version });
+      }
+    } catch (error) {
+      logger.error('Update verification failed', { error });
+      throw new Error(`Update verification failed: ${(error as Error).message}`);
+    }
   }
 
   /**
    * Cleanup old files
    */
-  private async cleanupOldFiles(_addon: any): Promise<void> {
-    // TODO: Implement cleanup logic
-    logger.info('Cleaning up old files');
+  private async cleanupOldFiles(addon: any): Promise<void> {
+    logger.info('Cleaning up old files', { addonId: addon.id });
+
+    const addonDir = path.dirname(addon.configPath);
+    const oldDir = path.join(addonDir, 'addon-server.old');
+
+    if (this.ssh) {
+      // Remote: cleanup via SSH
+      const checkResult = await this.ssh.execCommand(`test -d ${oldDir} && echo "exists" || echo "not exists"`);
+      if (checkResult.stdout.trim() === 'exists') {
+        logger.info('Removing old files on remote server');
+        await this.ssh.execCommand(`rm -rf ${oldDir}`);
+      }
+    } else {
+      // Local: cleanup locally
+      if (fs.existsSync(oldDir)) {
+        logger.info('Removing old files locally');
+        fs.rmSync(oldDir, { recursive: true, force: true });
+      }
+    }
+
+    logger.info('Old files cleaned up');
   }
 
   /**
