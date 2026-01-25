@@ -9,7 +9,7 @@ The Installation Manager orchestrates the complete automated deployment process 
 - **Prerequisites Management**: Checks and installs required software (Node.js, npm, Git, Nginx, Certbot, UFW, fail2ban)
 - **Firewall Configuration**: Automated UFW setup with proper port rules
 - **fail2ban Setup**: SSH protection with automatic configuration
-- **Repository Management**: Clones and sets up the addon server
+- **Bundled Package Management**: Copies addon-server from bundled resources
 - **Nginx Configuration**: Reverse proxy setup with optimal settings
 - **SSL/HTTPS Setup**: Automated Let's Encrypt certificate generation with Certbot
 - **Service Management**: Creates and configures systemd service with auto-start
@@ -29,7 +29,7 @@ The InstallationManager executes the following steps in order:
 4. **INSTALL_PREREQUISITES** - Installs missing prerequisites
 5. **SETUP_FIREWALL** - Configures UFW firewall
 6. **SETUP_FAIL2BAN** - Sets up fail2ban for SSH protection
-7. **CLONE_REPOSITORY** - Clones the addon server repository
+7. **CLONE_REPOSITORY** - Copies addon-server from bundled packages (no GitHub cloning)
 8. **INSTALL_DEPENDENCIES** - Runs npm install for dependencies
 9. **SETUP_NGINX** - Configures Nginx reverse proxy
 10. **SETUP_SSL** - Obtains and configures SSL certificates
@@ -72,15 +72,14 @@ if (result.success) {
 }
 ```
 
-### With Custom Repository
+### With Progress Tracking
 
 ```typescript
 const installManager = new InstallationManager({
   config,
-  repoUrl: 'https://github.com/yourusername/custom-addon.git',
-  repoBranch: 'main',
   progressCallback: (progress) => {
     console.log(`[${progress.step}] ${progress.message}`);
+    console.log(`Progress: ${progress.progress}%`);
   },
 });
 

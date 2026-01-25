@@ -138,6 +138,7 @@ export function createServer(
                          config.rdApiToken.trim().length > 0 && 
                          config.rdApiToken !== "YOUR_REAL_DEBRID_TOKEN_HERE";
 
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.json({
       addonStatus: "online",
       rdConnected: hasValidToken,
@@ -212,7 +213,8 @@ export function createServer(
     console.log(`Serving manifest with base URL: ${baseUrl}`);
     
     // Ensure proper Content-Type and CORS headers are set explicitly
-    res.setHeader("Content-Type", "application/json");
+    // Use charset for maximum compatibility across platforms (TV, desktop, mobile)
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -235,7 +237,8 @@ export function createServer(
       const { type, id } = req.params;
       const result = await handleStreamRequest({ type, id }, rdClient, cacheManager, config);
       
-      // Ensure CORS headers are set for stream responses
+      // Ensure proper Content-Type and CORS headers are set explicitly
+      res.setHeader("Content-Type", "application/json");
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
       res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");

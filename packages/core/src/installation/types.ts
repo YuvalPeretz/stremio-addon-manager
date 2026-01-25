@@ -14,7 +14,7 @@ export enum InstallationStep {
   INSTALL_PREREQUISITES = 'install_prerequisites',
   SETUP_FIREWALL = 'setup_firewall',
   SETUP_FAIL2BAN = 'setup_fail2ban',
-  CLONE_REPOSITORY = 'clone_repository',
+  CLONE_REPOSITORY = 'clone_repository', // NOTE: Now copies from bundled packages, not GitHub
   INSTALL_DEPENDENCIES = 'install_dependencies',
   SETUP_NGINX = 'setup_nginx',
   SETUP_SSL = 'setup_ssl',

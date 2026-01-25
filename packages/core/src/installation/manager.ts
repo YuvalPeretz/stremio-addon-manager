@@ -171,9 +171,9 @@ export class InstallationManager {
         this.skipStep(InstallationStep.SETUP_FAIL2BAN, 'Fail2ban disabled in configuration');
       }
 
-      // Step 7: Clone repository
+      // Step 7: Copy addon-server from bundled packages
       await this.executeStep(InstallationStep.CLONE_REPOSITORY, async () => {
-        await this.cloneRepository();
+        await this.cloneRepository(); // Note: Despite the name, this copies bundled files
       });
 
       // Step 8: Install dependencies
@@ -799,22 +799,23 @@ findtime = 600
   }
 
   /**
-   * Copy addon-server from bundled resources or clone repository
+   * Copy addon-server from bundled resources
    */
   private async cloneRepository(): Promise<void> {
     const targetDir = this.options.config.paths.addonDirectory;
     
-    // Try to use bundled addon-server first (faster, no network required)
+    // Get bundled addon-server path
     const bundledPath = await this.getBundledAddonServerPath();
-    if (bundledPath) {
-      logger.info('Using bundled addon-server', { bundledPath, targetDir });
-      await this.copyBundledAddonServer(bundledPath, targetDir);
-      return;
+    if (!bundledPath) {
+      throw new Error(
+        'Bundled addon-server not found. ' +
+        'Make sure you run "npm run build" to bundle the packages before installation. ' +
+        'The addon-server package should be in the resources/ directory.'
+      );
     }
     
-    // Fallback to cloning from repository
-    logger.info('Bundled addon-server not found, cloning from repository');
-    await this.cloneFromRepository(targetDir);
+    logger.info('Using bundled addon-server', { bundledPath, targetDir });
+    await this.copyBundledAddonServer(bundledPath, targetDir);
   }
 
   /**
@@ -1534,10 +1535,11 @@ import "./bin/server.js";
   }
 
   /**
-   * Clone repository from GitHub
+   * Clone repository from GitHub (DEPRECATED - kept for reference only)
+   * Installation now uses bundled packages exclusively
    */
   private async cloneFromRepository(targetDir: string): Promise<void> {
-    logger.info('Cloning repository');
+    logger.info('Cloning repository (DEPRECATED - should not be called)');
 
     let repoUrl = this.options.repoUrl || 'https://github.com/yourusername/stremio-addon-server.git';
     const branch = this.options.repoBranch || 'main';

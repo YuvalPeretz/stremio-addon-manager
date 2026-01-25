@@ -274,15 +274,18 @@ export async function handleStreamRequest(
         const streamUrl = await processRealDebridStream(magnetLink, rdClient, cacheManager, 0, seasonEpisode);
 
         if (streamUrl && streamUrl.url) {
-          return {
+          // Ensure the stream object has all required fields
+          const stream: Stream = {
             name: `RD+ ${torrent.quality || ""}`.trim(),
             title: torrent.title,
             url: streamUrl.url,
             behaviorHints: {
               bingeGroup: "real-debrid",
-              notWebReady: false,
+              // notWebReady removed - let Stremio decide based on URL
+              // This improves compatibility across platforms (mobile, TV, desktop)
             },
           };
+          return stream;
         }
       } catch (error) {
         console.error(`✗ Failed to process ${torrent.infoHash}:`, error);
