@@ -176,7 +176,6 @@ export function createServer(
     const manifestWithBase = {
       ...manifest,
       behaviorHints: {
-        ...manifest.behaviorHints,
         configurable: false,
         configurationRequired: false,
       },
