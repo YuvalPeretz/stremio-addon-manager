@@ -176,6 +176,7 @@ export function createServer(
     const manifestWithBase = {
       ...manifest,
       behaviorHints: {
+        ...manifest.behaviorHints,
         configurable: false,
         configurationRequired: false,
       },
@@ -209,7 +210,8 @@ export function createServer(
       const result = await handleStreamRequest({ type, id }, rdClient, cacheManager, config);
       
       // Ensure proper Content-Type and CORS headers are set explicitly
-      res.setHeader("Content-Type", "application/json");
+      // Match manifest endpoint - use charset for maximum compatibility
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
       res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -217,6 +219,9 @@ export function createServer(
       res.json(result);
     } catch (error) {
       console.error("Stream endpoint error:", error);
+      // Ensure error responses also have proper headers
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.setHeader("Access-Control-Allow-Origin", "*");
       res.status(500).json({ streams: [] });
     }
   });

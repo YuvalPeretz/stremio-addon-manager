@@ -75,7 +75,7 @@ export async function searchTorrents(
       const torrents: TorrentInfo[] = response.data.streams
         .filter((stream: { infoHash?: string }) => stream.infoHash)
         .map((stream: { title?: string; name?: string; infoHash: string }) => ({
-          title: stream.title || stream.name || "Unknown",
+          title: stream.title || stream.name,
           infoHash: stream.infoHash,
           magnetLink: `magnet:?xt=urn:btih:${stream.infoHash}`,
           quality: stream.name || "unknown",

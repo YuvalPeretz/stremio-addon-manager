@@ -251,9 +251,9 @@ export async function handleStreamRequest(
 
     // Step 6: Process torrents in parallel (with concurrency limit) for faster response
     const streams: Stream[] = [];
-    const maxConcurrency = config.maxConcurrency;
-    const maxStreams = config.maxStreams;
-    const torrentsToProcess = cachedTorrents.slice(0, config.torrentLimit);
+    const maxConcurrency = config.maxConcurrency; // Process 3 torrents at a time
+    const maxStreams = config.maxStreams; // Stop when we have 5 working streams
+    const torrentsToProcess = cachedTorrents.slice(0, 10); // Process top 10 prioritized torrents (match legacy)
 
     // Helper function to process a single torrent
     const processTorrent = async (torrent: TorrentInfo | ScoredTorrent): Promise<Stream | null> => {
