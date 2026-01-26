@@ -1685,11 +1685,6 @@ server {
         # Error handling for backend connection failures
         proxy_connect_timeout 5s;
         proxy_read_timeout 10s;
-        
-        # CORS headers for actual response (backend also sets these, but ensure they're present)
-        add_header Access-Control-Allow-Origin * always;
-        add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
     }
 
     # Stremio stream endpoint
@@ -1719,11 +1714,6 @@ server {
         proxy_read_timeout 300s;
         proxy_connect_timeout 75s;
         proxy_send_timeout 300s;
-        
-        # CORS headers for actual response (backend also sets these, but ensure they're present)
-        add_header Access-Control-Allow-Origin * always;
-        add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
     }
 
     # Catch-all: proxy all other paths to backend
@@ -2185,11 +2175,6 @@ server {
         # Error handling for backend connection failures
         proxy_connect_timeout 5s;
         proxy_read_timeout 10s;
-        
-        # CORS headers for actual response (backend also sets these, but ensure they're present)
-        add_header Access-Control-Allow-Origin * always;
-        add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
     }
 
     # Stremio stream endpoint
@@ -2219,11 +2204,6 @@ server {
         proxy_read_timeout 300s;
         proxy_connect_timeout 75s;
         proxy_send_timeout 300s;
-        
-        # CORS headers for actual response (backend also sets these, but ensure they're present)
-        add_header Access-Control-Allow-Origin * always;
-        add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
     }
 
     # Catch-all: proxy all other paths to backend
