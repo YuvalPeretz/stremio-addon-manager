@@ -58,62 +58,132 @@ function EnvironmentVariables() {
 
   async function loadConfig() {
     try {
+      console.log("[EnvVars] Loading config for addon:", selectedAddonId || "(default)");
       const result = await window.electron.config.load(selectedAddonId || undefined);
       if (result.success) {
+        console.log("[EnvVars] Config loaded successfully:", {
+          hasTarget: !!result.data?.installation?.target,
+          targetHost: result.data?.installation?.target?.host,
+          serviceName: result.data?.serviceName,
+        });
         setConfig(result.data);
+      } else {
+        console.error("[EnvVars] Config load failed:", result.error);
       }
     } catch (error) {
-      console.error("Failed to load config", error);
+      console.error("[EnvVars] Failed to load config", error);
     }
   }
 
   async function loadMetadata() {
     try {
+      console.log("[EnvVars] Loading metadata...");
       const result = await window.electron.env.getMetadata();
       if (result.success && result.data) {
+        console.log("[EnvVars] Metadata loaded:", {
+          metadataKeys: Object.keys(result.data.metadata || {}).length,
+          defaultKeys: Object.keys(result.data.defaults || {}).length,
+        });
         setMetadata(result.data.metadata as Record<string, EnvVarMetadata>);
         setDefaults(result.data.defaults);
+      } else {
+        console.error("[EnvVars] Metadata load failed:", result.error);
       }
     } catch (error) {
-      console.error("Failed to load metadata", error);
+      console.error("[EnvVars] Failed to load metadata", error);
     }
   }
 
   // Get SSH config from addon config if available
   function getSSHConfig(): any {
     if (!config) {
+      console.log("[EnvVars] No config loaded, cannot construct SSH config");
       return undefined;
     }
     const target = config?.installation?.target;
-    if (target && (target.host || target.privateKeyPath)) {
-      // Construct SSH config from target config
-      return {
-        host: target.host,
-        port: target.port || 22,
-        username: target.username,
-        password: target.password,
-        privateKeyPath: target.privateKeyPath,
-      };
+    if (!target) {
+      console.log("[EnvVars] Config has no installation.target");
+      return undefined;
     }
-    return undefined;
+    if (!target.host && !target.privateKeyPath) {
+      console.log("[EnvVars] Target has no host or privateKeyPath, assuming local");
+      return undefined;
+    }
+    
+    // Validate required fields
+    if (!target.host) {
+      console.warn("[EnvVars] SSH target missing host");
+      return undefined;
+    }
+    if (!target.username) {
+      console.warn("[EnvVars] SSH target missing username");
+      return undefined;
+    }
+    if (!target.password && !target.privateKeyPath) {
+      console.warn("[EnvVars] SSH target missing both password and privateKeyPath");
+      return undefined;
+    }
+    
+    const sshConfig = {
+      host: target.host,
+      port: target.port || 22,
+      username: target.username,
+      password: target.password,
+      privateKeyPath: target.privateKeyPath,
+    };
+    
+    console.log("[EnvVars] Constructed SSH config:", {
+      host: sshConfig.host,
+      port: sshConfig.port,
+      username: sshConfig.username,
+      hasPassword: !!sshConfig.password,
+      hasPrivateKey: !!sshConfig.privateKeyPath,
+    });
+    
+    return sshConfig;
   }
 
   async function loadEnvironmentVariables() {
     setLoading(true);
     try {
-      // Ensure config is loaded before getting SSH config
-      if (!config && selectedAddonId) {
+      console.log("[EnvVars] Loading environment variables for addon:", selectedAddonId || "(default)");
+      
+      // Ensure config is ALWAYS loaded before getting SSH config
+      if (!config) {
+        console.log("[EnvVars] Config not loaded yet, loading now...");
         await loadConfig();
       }
+      
       const ssh = getSSHConfig();
+      console.log("[EnvVars] Calling env.list with:", {
+        hasSSH: !!ssh,
+        addonId: selectedAddonId || "(none)",
+      });
+      
       const result = await window.electron.env.list(ssh, selectedAddonId || undefined);
-      if (result.success && result.data) {
-        setEnvVars(result.data);
+      console.log("[EnvVars] env.list result:", {
+        success: result.success,
+        hasData: !!result.data,
+        dataKeys: result.data ? Object.keys(result.data).length : 0,
+        error: result.error,
+      });
+      
+      if (result.success) {
+        if (result.data && Object.keys(result.data).length > 0) {
+          console.log("[EnvVars] Environment variables loaded:", Object.keys(result.data));
+          setEnvVars(result.data);
+        } else {
+          console.warn("[EnvVars] Success but no environment variables returned");
+          setEnvVars({});
+          message.warning("No environment variables found in service file");
+        }
       } else {
+        console.error("[EnvVars] Failed to load environment variables:", result.error);
         message.error(result.error || "Failed to load environment variables");
       }
     } catch (error) {
-      message.error("Failed to load environment variables");
+      console.error("[EnvVars] Exception while loading environment variables:", error);
+      message.error(`Failed to load environment variables: ${(error as Error).message}`);
     } finally {
       setLoading(false);
     }

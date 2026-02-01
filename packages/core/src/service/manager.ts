@@ -674,24 +674,37 @@ export class ServiceManager {
     }
 
     try {
-      logger.debug("Reading environment variables from service file", { service: this.serviceName });
+      logger.info("[ServiceManager] Reading environment variables from service file", { 
+        service: this.serviceName,
+        isRemote: !!this.ssh 
+      });
 
       const serviceFile = await ServiceFileManager.readServiceFile(this.serviceName, this.ssh);
       const envVars: Record<string, string> = {};
+
+      logger.debug("[ServiceManager] Service file parsed", {
+        environmentCount: serviceFile.service.environment.length,
+      });
 
       for (const env of serviceFile.service.environment) {
         envVars[env.key] = env.value;
       }
 
-      logger.debug("Environment variables read successfully", {
+      logger.info("[ServiceManager] Environment variables read successfully", {
         service: this.serviceName,
         count: Object.keys(envVars).length,
+        keys: Object.keys(envVars),
       });
 
       return envVars;
     } catch (error) {
-      logger.error("Failed to read environment variables", { service: this.serviceName, error });
-      throw new Error(`Failed to read environment variables: ${(error as Error).message}`);
+      logger.error("[ServiceManager] Failed to read environment variables", { 
+        service: this.serviceName, 
+        error: (error as Error).message,
+        stack: (error as Error).stack,
+        isRemote: !!this.ssh,
+      });
+      throw new Error(`Failed to read environment variables from service '${this.serviceName}': ${(error as Error).message}`);
     }
   }
 

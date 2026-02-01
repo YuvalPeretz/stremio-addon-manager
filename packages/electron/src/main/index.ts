@@ -761,22 +761,43 @@ function setupIPC() {
   // Environment Variable Management
   ipcMain.handle("env:list", async (_event, ssh, addonId?: string) => {
     try {
+      logger.info("[IPC] env:list called", {
+        hasSSH: !!ssh,
+        sshHost: ssh?.host,
+        addonId: addonId || "(none)",
+      });
+      
       const sshConnection = ssh ? new SSHManager(ssh) : undefined;
       if (sshConnection) {
+        logger.info("[IPC] Connecting to SSH...");
         await sshConnection.connect();
+        logger.info("[IPC] SSH connected successfully");
       }
 
       const serviceName = await getServiceName(addonId);
+      logger.info("[IPC] Service name resolved:", serviceName);
+      
       const serviceManager = new ServiceManager(serviceName, sshConnection);
+      logger.info("[IPC] Getting environment variables from service file...");
       const envVars = await serviceManager.getEnvironmentVariables();
+      logger.info("[IPC] Environment variables retrieved:", {
+        count: Object.keys(envVars).length,
+        keys: Object.keys(envVars),
+      });
 
       if (sshConnection) {
         await sshConnection.disconnect();
+        logger.info("[IPC] SSH disconnected");
       }
 
       return { success: true, data: envVars };
     } catch (error) {
-      logger.error("Env list failed", error);
+      logger.error("[IPC] Env list failed", {
+        error: (error as Error).message,
+        stack: (error as Error).stack,
+        addonId,
+        hasSSH: !!ssh,
+      });
       return { success: false, error: (error as Error).message };
     }
   });

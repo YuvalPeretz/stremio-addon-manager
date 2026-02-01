@@ -53,11 +53,24 @@ export class ServiceFileManager {
     const servicePath = `/etc/systemd/system/${serviceName}.service`;
 
     try {
+      logger.info("[ServiceFileManager] Reading service file", {
+        serviceName,
+        servicePath,
+        isRemote: !!ssh,
+      });
+      
       let content: string;
 
       if (ssh) {
         // Read from remote system
+        logger.debug("[ServiceFileManager] Executing remote cat command");
         const result = await ssh.execSudo(`cat ${servicePath}`);
+        logger.debug("[ServiceFileManager] Remote cat result", {
+          exitCode: result.code,
+          stdoutLength: result.stdout?.length || 0,
+          stderrLength: result.stderr?.length || 0,
+        });
+        
         if (result.code !== 0) {
           // Check if file doesn't exist
           if (result.stderr.includes("No such file") || result.stderr.includes("ENOENT")) {
@@ -89,6 +102,12 @@ export class ServiceFileManager {
               "The service file exists but contains no content. This may indicate corruption."
           );
         }
+        
+        logger.info("[ServiceFileManager] Service file read successfully", {
+          serviceName,
+          contentLength: content.length,
+          lineCount: content.split('\n').length,
+        });
       } else {
         // Read from local system
         try {
