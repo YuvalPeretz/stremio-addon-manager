@@ -129,6 +129,19 @@ export function createServer(
     }
   });
 
+  // Health check endpoint (public - no auth or rate limiting)
+  app.get("/health", (_req: Request, res: Response) => {
+    res.json({
+      status: "ok",
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+      memory: {
+        heapUsed: `${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB`,
+        heapTotal: `${(process.memoryUsage().heapTotal / 1024 / 1024).toFixed(2)} MB`,
+      },
+    });
+  });
+
   // Stats API endpoint (with rate limiting)
   app.get("/stats", statsRateLimiter, (_req: Request, res: Response) => {
     const memoryUsage = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2);

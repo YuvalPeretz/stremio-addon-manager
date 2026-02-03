@@ -48,8 +48,9 @@ function startServer(): void {
   // Start listening
   app.listen(config.port, () => {
     console.log(`\n✓ Server running on port ${config.port}`);
-    console.log(`\nEndpoints:`);
+    console.log(`\nPublic endpoints:`);
     console.log(`  - Landing: http://localhost:${config.port}/`);
+    console.log(`  - Health: http://localhost:${config.port}/health`);
     console.log(`  - Stats: http://localhost:${config.port}/stats`);
 
     if (config.authEnabled) {
@@ -69,15 +70,27 @@ function startServer(): void {
   });
 }
 
-// Handle uncaught exceptions
+// Handle uncaught exceptions gracefully - don't exit to prevent server downtime
 process.on("uncaughtException", (error) => {
-  console.error("Uncaught exception:", error);
-  process.exit(1);
+  console.error("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.error("⚠️  UNCAUGHT EXCEPTION - Server continuing to run");
+  console.error("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.error("Time:", new Date().toISOString());
+  console.error("Error:", error);
+  console.error("Stack:", (error as Error).stack);
+  console.error("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+  // Don't call process.exit(1) - let the server recover and continue
 });
 
-process.on("unhandledRejection", (error) => {
-  console.error("Unhandled rejection:", error);
-  process.exit(1);
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.error("⚠️  UNHANDLED PROMISE REJECTION - Server continuing to run");
+  console.error("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.error("Time:", new Date().toISOString());
+  console.error("Reason:", reason);
+  console.error("Promise:", promise);
+  console.error("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+  // Don't call process.exit(1) - let the server recover and continue
 });
 
 // Start the server
