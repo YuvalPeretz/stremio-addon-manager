@@ -28,7 +28,7 @@ function startServer(): void {
   console.log("\nCache Configuration:");
   console.log(`  - Metadata: ${config.cacheTtl.metadata}s (24h)`);
   console.log(`  - Torrent Search: ${config.cacheTtl.torrentSearch}s (6h)`);
-  console.log(`  - Streams: ${config.cacheTtl.streams}s (30m)`);
+  console.log(`  - Streams: ${config.cacheTtl.streams}s (24h)`);
   console.log("\nRate Limiting:");
   console.log(`  - Streams: ${config.rateLimits.streamMax} requests per ${config.rateLimits.streamWindow / 60000} minutes`);
   console.log(`  - Stats: ${config.rateLimits.statsMax} requests per ${config.rateLimits.statsWindow / 60000} minute`);

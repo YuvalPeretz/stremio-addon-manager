@@ -112,7 +112,7 @@ export function loadConfig(): ServerConfig {
     cacheTtl: {
       metadata: 86400, // 24 hours
       torrentSearch: 21600, // 6 hours
-      streams: 1800, // 30 minutes
+      streams: 86400, // 24 hours - cache entire stream responses to prevent repeated processing
     },
 
     // Rate Limiting

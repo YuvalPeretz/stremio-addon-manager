@@ -147,6 +147,14 @@ export async function handleStreamRequest(
   const { type, id } = params;
   console.log(`Stream request: ${type} ${id}`);
 
+  // Check request-level cache first (this caches the ENTIRE response)
+  const requestCacheKey = `request_${type}_${id}`;
+  const cachedResponse = cacheManager.getStream(requestCacheKey);
+  if (cachedResponse) {
+    console.log(`✓ Returning cached response for ${type}/${id} (${(cachedResponse as StreamResponse).streams.length} streams)`);
+    return cachedResponse as StreamResponse;
+  }
+
   try {
     // Step 1: Extract season/episode if this is a series
     const seasonEpisode = type === "series" ? extractSeasonEpisode(id) : null;
@@ -158,7 +166,9 @@ export async function handleStreamRequest(
     const metadata = await getCinemetaMetadata(type, id, cacheManager);
     if (!metadata) {
       console.log("No metadata found for:", id);
-      return { streams: [] };
+      const emptyResponse: StreamResponse = { streams: [] };
+      cacheManager.setStream(requestCacheKey, emptyResponse);
+      return emptyResponse;
     }
 
     console.log(`Found metadata: ${metadata.name} (${metadata.year})`);
@@ -168,7 +178,9 @@ export async function handleStreamRequest(
 
     if (torrents.length === 0) {
       console.log("No torrents found for:", id);
-      return { streams: [] };
+      const emptyResponse: StreamResponse = { streams: [] };
+      cacheManager.setStream(requestCacheKey, emptyResponse);
+      return emptyResponse;
     }
 
     console.log(`Found ${torrents.length} torrents from Torrentio`);
@@ -321,9 +333,20 @@ export async function handleStreamRequest(
     }
 
     console.log(`Returning ${streams.length} streams (processed ${processedCount} torrents)`);
-    return { streams };
+    
+    // Cache the entire response for subsequent requests
+    const response: StreamResponse = { streams };
+    cacheManager.setStream(requestCacheKey, response);
+    console.log(`✓ Cached response for ${type}/${id} (${streams.length} streams)`);
+    
+    return response;
   } catch (error) {
     console.error("Stream handler error:", error);
-    return { streams: [] };
+    
+    // Cache empty response for failed requests to prevent repeated failures
+    const errorResponse: StreamResponse = { streams: [] };
+    cacheManager.setStream(requestCacheKey, errorResponse);
+    
+    return errorResponse;
   }
 }
