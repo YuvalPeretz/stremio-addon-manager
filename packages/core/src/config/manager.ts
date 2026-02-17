@@ -164,7 +164,7 @@ export class ConfigManager {
    */
   public async save(
     config?: AddonManagerConfig,
-    options?: { syncServiceFile?: boolean; restartService?: boolean }
+    options?: { syncServiceFile?: boolean; restartService?: boolean },
   ): Promise<{ serviceFileSynced?: boolean; serviceFileChanges?: string[] }> {
     const configToSave = config || this.config;
 
@@ -230,7 +230,11 @@ export class ConfigManager {
             } catch (serviceError) {
               const errorMsg = (serviceError as Error).message;
               // Edge case: Service doesn't exist - that's okay, config is saved
-              if (errorMsg.includes("does not exist") || errorMsg.includes("ENOENT") || errorMsg.includes("not found")) {
+              if (
+                errorMsg.includes("does not exist") ||
+                errorMsg.includes("ENOENT") ||
+                errorMsg.includes("not found")
+              ) {
                 logger.info("Service does not exist yet, config saved but service file not synced", {
                   service: serviceName,
                 });
@@ -518,12 +522,14 @@ export class ConfigManager {
         return `/etc/nginx/sites-available/stremio-addon-${this.addonId}`;
       case "serviceFile":
         return `/etc/systemd/system/${serviceName}.service`;
-      case "logs":
+      case "logs": {
         const homeDir = os.homedir();
         return path.join(homeDir, ".stremio-addon-manager", "addons", this.addonId, "logs");
-      case "backups":
+      }
+      case "backups": {
         const homeDir2 = os.homedir();
         return path.join(homeDir2, ".stremio-addon-manager", "addons", this.addonId, "backups");
+      }
       default:
         return "";
     }
