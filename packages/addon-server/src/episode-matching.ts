@@ -147,8 +147,31 @@ export function findMatchingFile(
   }
 
   const scoredFiles: ScoredFile[] = files.map((file, index) => {
-    const filename = ((file.path || file.filename || "") as string).toLowerCase();
+    const filename = (file.path || file.filename || "").toString().toLowerCase();
     let score = 0;
+
+    // CRITICAL: Heavily penalize movie files to prevent them from being selected for episodes
+    const moviePatterns = [
+      /\bmovie\b/i,
+      /\bfilm\b/i,
+      /\bova\b/i,
+      /\boav\b/i,
+      /\bspecial\b/i,
+      /\b(19|20)\d{2}\b/, // Year patterns (1900-2099) often indicate movies
+    ];
+    
+    for (const pattern of moviePatterns) {
+      if (pattern.test(filename)) {
+        score -= 100; // Massive penalty for movie files
+      }
+    }
+
+    // Only score positively for video files
+    const videoExtensions = ['.mkv', '.mp4', '.avi', '.m4v', '.webm', '.mov'];
+    const hasVideoExtension = videoExtensions.some(ext => filename.endsWith(ext));
+    if (!hasVideoExtension) {
+      score -= 50; // Penalize non-video files heavily
+    }
 
     // Exact matches get highest scores
     if (new RegExp(`[s\\s]${seasonPadded}[e\\s]${episodePadded}`, "i").test(filename)) {
@@ -193,13 +216,19 @@ export function findMatchingFile(
   scoredFiles.sort((a, b) => b.score - a.score);
   const bestMatch = scoredFiles[0];
 
+  // Log all scored files for debugging
+  console.log(`\nScored ${scoredFiles.length} files for S${season}E${episode}:`);
+  scoredFiles.slice(0, 5).forEach((sf, i) => {
+    console.log(`  ${i + 1}. [Score: ${sf.score}] ${sf.filename}`);
+  });
+
   if (bestMatch.score > 0) {
-    console.log(`Found matching file: ${bestMatch.filename.substring(0, 60)} (score: ${bestMatch.score})`);
+    console.log(`✓ Selected: ${bestMatch.filename} (score: ${bestMatch.score})`);
     return { fileId: bestMatch.fileId, file: bestMatch.file, index: bestMatch.index };
   }
 
   // If no good match found, return first file as fallback
-  console.log(`No clear episode match in filenames, using first file`);
+  console.log(`⚠️  No clear episode match in filenames, using first file`);
   const firstFile = files[0];
   return { fileId: (firstFile.id as number) || 0, file: firstFile, index: 0 };
 }

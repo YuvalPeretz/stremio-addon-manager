@@ -77,16 +77,16 @@ export function loadConfig(): ServerConfig {
   const authEnabled = Boolean(addonPassword && addonPassword !== "YOUR_ADDON_PASSWORD_HERE");
 
   // Parse and validate torrent processing limits
-  const torrentLimit = parseEnvInt(process.env.TORRENT_LIMIT, 15, 1, 50, "TORRENT_LIMIT");
+  const torrentLimit = parseEnvInt(process.env.TORRENT_LIMIT, 100, 1, 200, "TORRENT_LIMIT");
   const availabilityCheckLimit = parseEnvInt(
     process.env.AVAILABILITY_CHECK_LIMIT,
-    15,
+    100,
     5,
-    50,
+    200,
     "AVAILABILITY_CHECK_LIMIT"
   );
-  const maxStreams = parseEnvInt(process.env.MAX_STREAMS, 5, 1, 20, "MAX_STREAMS");
-  const maxConcurrency = parseEnvInt(process.env.MAX_CONCURRENCY, 3, 1, 10, "MAX_CONCURRENCY");
+  const maxStreams = parseEnvInt(process.env.MAX_STREAMS, 15, 1, 50, "MAX_STREAMS");
+  const maxConcurrency = parseEnvInt(process.env.MAX_CONCURRENCY, 5, 1, 10, "MAX_CONCURRENCY");
 
   const config: ServerConfig = {
     // Real-Debrid

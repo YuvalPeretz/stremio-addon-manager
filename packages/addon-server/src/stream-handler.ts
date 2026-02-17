@@ -16,6 +16,7 @@ import {
   type SeasonEpisode,
   type ScoredTorrent,
 } from "./episode-matching.js";
+import { fetchSubtitles } from "./subtitle-fetcher.js";
 
 /**
  * Extract infoHash from magnet link
@@ -162,7 +163,10 @@ export async function handleStreamRequest(
       console.log(`Looking for Season ${seasonEpisode.season}, Episode ${seasonEpisode.episode}`);
     }
 
-    // Step 2: Get metadata from Cinemeta
+    // Step 2: Fetch subtitles in parallel with metadata (for faster response)
+    const subtitlesPromise = fetchSubtitles(type, id, cacheManager);
+
+    // Step 3: Get metadata from Cinemeta
     const metadata = await getCinemetaMetadata(type, id, cacheManager);
     if (!metadata) {
       console.log("No metadata found for:", id);
@@ -173,7 +177,7 @@ export async function handleStreamRequest(
 
     console.log(`Found metadata: ${metadata.name} (${metadata.year})`);
 
-    // Step 3: Search for torrents using Torrentio
+    // Step 4: Search for torrents using Torrentio
     const torrents = await searchTorrents(id, type, cacheManager);
 
     if (torrents.length === 0) {
@@ -185,7 +189,7 @@ export async function handleStreamRequest(
 
     console.log(`Found ${torrents.length} torrents from Torrentio`);
 
-    // Step 4: Filter and prioritize torrents for series
+    // Step 5: Filter and prioritize torrents for series
     let filteredTorrents: TorrentInfo[] = torrents;
     if (seasonEpisode) {
       // Score and filter torrents based on episode matching
@@ -261,11 +265,11 @@ export async function handleStreamRequest(
       cachedTorrents = limitedTorrents;
     }
 
-    // Step 6: Process torrents in parallel (with concurrency limit) for faster response
+    // Step 7: Process torrents in parallel (with concurrency limit) for faster response
     const streams: Stream[] = [];
-    const maxConcurrency = config.maxConcurrency; // Process 3 torrents at a time
-    const maxStreams = config.maxStreams; // Stop when we have 5 working streams
-    const torrentsToProcess = cachedTorrents.slice(0, 10); // Process top 10 prioritized torrents (match legacy)
+    const maxConcurrency = config.maxConcurrency; // Process multiple torrents concurrently
+    const maxStreams = config.maxStreams; // Stop when we have enough working streams
+    const torrentsToProcess = cachedTorrents; // Process all cached torrents up to availabilityCheckLimit
 
     // Helper function to process a single torrent
     const processTorrent = async (torrent: TorrentInfo | ScoredTorrent): Promise<Stream | null> => {
@@ -280,7 +284,12 @@ export async function handleStreamRequest(
           seasonEpisode && scoredTorrent && scoredTorrent.matches
             ? ` [MATCHES S${seasonEpisode.season}E${seasonEpisode.episode}]`
             : "";
-        console.log(`Processing torrent: ${torrent.title.substring(0, 50)}...${matchInfo}`);
+        
+        // Highlight Hebrew audio content
+        const hasHebrew = /\bheb\b|hebrew|עברית/i.test(torrent.title);
+        const hebrewInfo = hasHebrew ? " [🇮🇱 HEBREW AUDIO]" : "";
+        
+        console.log(`Processing torrent: ${torrent.title.substring(0, 50)}...${matchInfo}${hebrewInfo}`);
 
         // Try to add magnet to Real-Debrid with episode info
         const streamUrl = await processRealDebridStream(magnetLink, rdClient, cacheManager, 0, seasonEpisode);
@@ -333,6 +342,15 @@ export async function handleStreamRequest(
     }
 
     console.log(`Returning ${streams.length} streams (processed ${processedCount} torrents)`);
+    
+    // Step 8: Await subtitles and add them to all streams
+    const subtitles = await subtitlesPromise;
+    if (subtitles.length > 0) {
+      console.log(`✓ Adding ${subtitles.length} subtitle languages to ${streams.length} streams`);
+      streams.forEach(stream => {
+        stream.subtitles = subtitles;
+      });
+    }
     
     // Cache the entire response for subsequent requests
     const response: StreamResponse = { streams };

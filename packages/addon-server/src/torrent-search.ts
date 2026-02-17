@@ -60,8 +60,12 @@ export async function searchTorrents(
   }
 
   try {
-    // Use Torrentio's public API to get torrents
-    const torrentioUrl = `https://torrentio.strem.fun/stream/${type}/${imdbId}.json`;
+    // Use Torrentio's public API to get torrents with optimal configuration:
+    // - sort=qualitysize: Prioritize high quality and reasonable file sizes
+    // - language=hebrew,english: Prioritize Hebrew and English audio tracks
+    // This ensures Hebrew content appears in results while maintaining quality
+    const torrentioConfig = "sort=qualitysize%7Clanguage=hebrew,english";
+    const torrentioUrl = `https://torrentio.strem.fun/${torrentioConfig}/stream/${type}/${imdbId}.json`;
 
     const response = await axios.get(torrentioUrl, {
       timeout: 10000,

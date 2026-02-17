@@ -10,10 +10,17 @@ export interface TorrentInfo {
   size: string;
 }
 
+export interface Subtitle {
+  id: string;
+  url: string;
+  lang: string;
+}
+
 export interface Stream {
   name: string;
   title: string;
   url: string;
+  subtitles?: Subtitle[];
   behaviorHints?: {
     bingeGroup?: string;
     notWebReady?: boolean;
