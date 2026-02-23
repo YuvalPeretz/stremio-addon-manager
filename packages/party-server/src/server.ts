@@ -25,7 +25,9 @@ export function createServer(
 ): express.Application {
   const app = express();
 
-  app.use(cors({ origin: "*", credentials: true }));
+  // credentials: true is incompatible with origin: "*" per the CORS spec and can
+  // suppress Access-Control-Allow-Origin on some responses.  Use plain wildcard.
+  app.use(cors({ origin: "*" }));
   app.use(express.json());
 
   // Request logging
@@ -54,6 +56,11 @@ export function createServer(
   });
 
   app.get("/api/proxy", async (req: Request, res: Response) => {
+    // Set CORS headers immediately and synchronously so they are present on every
+    // response path — including early-exit 400/502 responses before any async work.
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges");
+
     const urlParam = req.query.url as string | undefined;
     if (!urlParam) {
       res.status(400).json({ error: "url parameter required" });
@@ -67,19 +74,18 @@ export function createServer(
       const targetUrl = urlParam;
       const range = req.headers.range;
 
+      // No timeout for streaming requests — let Nginx proxy_read_timeout govern.
+      // A 30 s axios timeout was cutting off large-file range requests mid-stream.
       const upstream = await axios.get(targetUrl, {
         responseType: "stream",
         headers: {
           ...(range ? { Range: range } : {}),
           "User-Agent": "Mozilla/5.0 (compatible; StremioParty/1.0)",
         },
-        timeout: 30000,
         maxRedirects: 10,
       });
 
       res.status(upstream.status);
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges");
 
       const forwardHeaders = [
         "content-type",
@@ -95,20 +101,22 @@ export function createServer(
 
       const stream = upstream.data as NodeJS.ReadableStream;
 
-      // If the upstream stream errors after we've already started sending headers,
-      // we can't send a new HTTP response — just destroy the socket.
+      // On upstream stream error after headers are sent we cannot send a new status
+      // code.  Call res.end() (graceful close) rather than res.destroy() (abrupt
+      // socket kill) — destroy causes Nginx to see a broken upstream and generate
+      // its own 502 page WITHOUT CORS headers, confusing the browser.
       stream.on("error", (err: Error) => {
         console.error("Upstream stream error:", err.message);
         if (!res.headersSent) {
           res.status(502).json({ error: "Stream error" });
         } else {
-          res.destroy();
+          res.end();
         }
       });
 
       stream.pipe(res);
 
-      // Stop fetching from Real-Debrid if the client disconnects
+      // Stop fetching from Real-Debrid if the client disconnects (e.g. seek cancel).
       req.on("close", () => {
         (stream as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
       });
