@@ -34,6 +34,10 @@ export function createServer(
 
   // ─── Public Endpoints ────────────────────────────────────
 
+  app.get("/", (_req: Request, res: Response) => {
+    res.json({ status: "on" });
+  });
+
   app.get("/health", (_req: Request, res: Response) => {
     res.json({
       status: "ok",

@@ -3352,6 +3352,15 @@ server {
     ssl_certificate ${existingCert!.certificatePath};
     ssl_certificate_key ${existingCert!.privateKeyPath};
 
+    # Party server availability check (exact match: GET /party)
+    location = /party {
+        proxy_pass http://localhost:${partyPort}/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        add_header Access-Control-Allow-Origin * always;
+    }
+
     # Party API endpoints
     location /party/ {
         proxy_pass http://localhost:${partyPort}/;
@@ -3397,6 +3406,15 @@ server {
 server {
     listen 80;
     server_name ${domain};
+
+    # Party server availability check (exact match: GET /party)
+    location = /party {
+        proxy_pass http://localhost:${partyPort}/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        add_header Access-Control-Allow-Origin * always;
+    }
 
     location /party/ {
         proxy_pass http://localhost:${partyPort}/;
