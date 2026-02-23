@@ -3049,9 +3049,17 @@ echo url="https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}
       const serverJsContent = `#!/usr/bin/env node\nimport "./dist/index.js";\n`;
       const serverJsPath = this.ssh ? path.posix.join(partyInstallDir, 'server.js') : path.join(partyInstallDir, 'server.js');
       if (this.ssh) {
-        const tmpFile = `/tmp/party-server-entry.${Date.now()}.js`;
-        await this.execCommand(`cat > "${tmpFile}" << 'EOFMARKER'\n${serverJsContent}EOFMARKER`);
-        await this.execSudo(`mv "${tmpFile}" "${serverJsPath}" && chmod +x "${serverJsPath}"`);
+        const fsP2 = await import('node:fs/promises');
+        const osModule2 = await import('node:os');
+        const localEntryTmp = path.join(osModule2.tmpdir(), `party-server-entry.${Date.now()}.js`);
+        const remoteEntryTmp = `/tmp/party-server-entry.${Date.now()}.js`;
+        await fsP2.writeFile(localEntryTmp, serverJsContent, 'utf-8');
+        try {
+          await this.ssh.transferFile(localEntryTmp, remoteEntryTmp);
+        } finally {
+          await fsP2.unlink(localEntryTmp).catch(() => {});
+        }
+        await this.execSudo(`mv "${remoteEntryTmp}" "${serverJsPath}" && chmod +x "${serverJsPath}"`);
       } else {
         const fsModule = await import('fs');
         fsModule.writeFileSync(serverJsPath, serverJsContent);
@@ -3094,9 +3102,17 @@ WantedBy=multi-user.target
 
       const servicePath = `/etc/systemd/system/${partyServiceName}.service`;
       if (this.ssh) {
-        const tmpService = `/tmp/${partyServiceName}.service.${Date.now()}`;
-        await this.execCommand(`cat > ${tmpService} << 'EOF'\n${serviceConfig}\nEOF`);
-        await this.execSudo(`mv ${tmpService} ${servicePath}`);
+        const fsP = await import('node:fs/promises');
+        const osModule = await import('node:os');
+        const localServiceTmp = path.join(osModule.tmpdir(), `${partyServiceName}.service.${Date.now()}`);
+        const remoteServiceTmp = `/tmp/${partyServiceName}.service.${Date.now()}`;
+        await fsP.writeFile(localServiceTmp, serviceConfig, 'utf-8');
+        try {
+          await this.ssh.transferFile(localServiceTmp, remoteServiceTmp);
+        } finally {
+          await fsP.unlink(localServiceTmp).catch(() => {});
+        }
+        await this.execSudo(`mv ${remoteServiceTmp} ${servicePath}`);
       } else {
         const fsP = await import('node:fs/promises');
         const tmpService = `/tmp/${partyServiceName}.service.${Date.now()}`;
