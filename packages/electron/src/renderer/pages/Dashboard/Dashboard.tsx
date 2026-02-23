@@ -196,11 +196,12 @@ function Dashboard() {
         const d = result.data;
         const text = [
           `Nginx config path: ${d.nginxConfigPath}`,
-          `Party blocks injected: ${d.nginxHasPartyBlocks ? "YES ✓" : "NO ✗ — nginx config was NOT updated"}`,
+          `Party blocks in nginx: ${d.nginxHasPartyBlocks ? "YES ✓" : "NO ✗ — nginx config was NOT updated"}`,
           `Party service status: ${d.serviceStatus}`,
-          `Port reachable (localhost:7777): ${d.portReachable ? "YES ✓" : "NO ✗"}`,
+          `Service port env var: ${d.servicePortEnv || "(none found)"}`,
+          `Port reachable (localhost:7777): ${d.portReachable ? "YES ✓" : "NO ✗ — party server not listening on port 7777"}`,
           "",
-          "=== Last 60 lines of nginx config ===",
+          "=== Nginx config ===",
           d.nginxConfigSnippet,
           "",
           "=== Party service logs ===",
@@ -499,6 +500,24 @@ function Dashboard() {
         okText="Close"
         cancelButtonProps={{ style: { display: "none" } }}
         width={800}
+        footer={(_, { OkBtn }) => (
+          <Flex justify="space-between" align="center">
+            <Button
+              onClick={() => {
+                if (partyDiagnosisResult) {
+                  navigator.clipboard.writeText(partyDiagnosisResult).then(() => {
+                    void message.success("Copied to clipboard");
+                  }).catch(() => {
+                    void message.error("Failed to copy");
+                  });
+                }
+              }}
+            >
+              Copy Logs
+            </Button>
+            <OkBtn />
+          </Flex>
+        )}
       >
         <pre style={{ maxHeight: 500, overflow: "auto", fontSize: 12, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
           {partyDiagnosisResult}

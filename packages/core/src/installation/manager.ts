@@ -3084,7 +3084,7 @@ RestartSec=10
 StandardOutput=journal
 StandardError=journal
 Environment=NODE_ENV=production
-Environment=PORT=${partyPort}
+Environment=PARTY_PORT=${partyPort}
 Environment=PARTY_ADDON_URL=${partyOptions.addonUrl}
 
 [Install]
@@ -3484,9 +3484,12 @@ WantedBy=multi-user.target
   /**
    * Write the complete addon nginx config, optionally including /party location blocks.
    *
-   * Generates the config from scratch (same approach as configureNginxWithExistingCertificate)
-   * using the proven `cat > file << 'EOF'` heredoc — single-quoted EOF means the shell does NOT
-   * expand nginx variables like $host, $1, $http_upgrade, etc. No read-parse-inject fragility.
+   * Safety guarantees:
+   *  1. SSL cert paths are read from the EXISTING working config — can never accidentally drop SSL.
+   *  2. SSL cert files are verified to exist on the server before writing anything.
+   *  3. For remote targets, the config is transferred via SFTP (NodeSSH putFile) — no shell escaping.
+   *  4. A backup of the original config is taken and auto-restored if nginx -t or post-reload check fails.
+   *  5. After reload, nginx service health is verified — if nginx goes down, the backup is restored.
    */
   private async writeAddonNginxConfig(
     domain: string,
@@ -3497,15 +3500,49 @@ WantedBy=multi-user.target
     const serviceName = this.getServiceName();
 
     if (!addonNginxConf) {
-      throw new Error('Addon nginx config path is not set in configuration — re-install the addon first.');
+      throw new Error('Addon nginx config path is not set — re-install the addon first.');
     }
 
-    const existingCert = await this.checkExistingCertificate(domain);
-    const hasSSL = existingCert && existingCert.isValid;
+    // Fail fast if the existing nginx config doesn't exist — addon isn't installed yet.
+    const confExists = await this.execCommand(`test -f "${addonNginxConf}" && echo "EXISTS" || echo "MISSING"`);
+    if (!confExists.stdout.includes('EXISTS')) {
+      throw new Error(`Addon nginx config not found at ${addonNginxConf} — install the addon first.`);
+    }
+
+    // ------------------------------------------------------------------
+    // Step 1: Extract SSL cert paths from the CURRENTLY WORKING config.
+    // This is the ground truth — we never call certbot or guess paths here.
+    // ------------------------------------------------------------------
+    const certLineResult = await this.execCommand(
+      `grep -E '^[[:space:]]*ssl_certificate[^_]' "${addonNginxConf}" 2>/dev/null | head -1 | awk '{print $2}' | tr -d ';'`
+    );
+    const keyLineResult = await this.execCommand(
+      `grep -E '^[[:space:]]*ssl_certificate_key' "${addonNginxConf}" 2>/dev/null | head -1 | awk '{print $2}' | tr -d ';'`
+    );
+    const certificatePath = certLineResult.stdout.trim();
+    const privateKeyPath = keyLineResult.stdout.trim();
+    const hasSSL = !!(certificatePath && privateKeyPath);
+
+    // ------------------------------------------------------------------
+    // Step 2: If SSL is configured, verify the cert files actually exist.
+    // If they're missing for some reason, ABORT rather than write a broken config.
+    // ------------------------------------------------------------------
+    if (hasSSL) {
+      const certCheck = await this.execCommand(
+        `test -f "${certificatePath}" && test -f "${privateKeyPath}" && echo "EXISTS" || echo "MISSING"`
+      );
+      if (!certCheck.stdout.includes('EXISTS')) {
+        throw new Error(
+          `SSL cert files referenced in the nginx config do not exist on the server.\n` +
+          `  cert: ${certificatePath}\n  key:  ${privateKeyPath}\n` +
+          `Aborting to avoid breaking the HTTPS configuration.`
+        );
+      }
+    }
 
     // Party location blocks (only emitted when partyPort is provided)
     const partyBlocks = partyPort === null ? '' : `
-    # Party server — exact match (GET /party → health check)
+    # Party server - exact match (GET /party)
     location = /party {
         proxy_pass http://localhost:${partyPort}/;
         proxy_http_version 1.1;
@@ -3524,7 +3561,7 @@ WantedBy=multi-user.target
         }
     }
 
-    # Party server — API routes (/party/api/*, etc.)
+    # Party server - API and static routes (/party/*)
     location /party/ {
         proxy_pass http://localhost:${partyPort}/;
         proxy_http_version 1.1;
@@ -3546,7 +3583,7 @@ WantedBy=multi-user.target
         }
     }
 
-    # Party server — WebSocket upgrade (/party/ws/:sessionId)
+    # Party server - WebSocket upgrade (/party/ws/:sessionId)
     location /party/ws/ {
         proxy_pass http://localhost:${partyPort}/ws/;
         proxy_http_version 1.1;
@@ -3563,10 +3600,9 @@ WantedBy=multi-user.target
 
     let nginxConfig: string;
 
-    if (hasSSL && existingCert) {
-      const { certificatePath, privateKeyPath } = existingCert;
+    if (hasSSL) {
       nginxConfig = `
-# HTTP server — redirect all traffic to HTTPS
+# HTTP server - redirect all traffic to HTTPS
 server {
     listen 80;
     server_name ${domain};
@@ -3676,7 +3712,7 @@ ${partyBlocks}
 `;
     } else {
       nginxConfig = `
-# HTTP server (no SSL)
+# HTTP server (no SSL configured)
 server {
     listen 80;
     server_name ${domain};
@@ -3749,57 +3785,92 @@ ${partyBlocks}
 `;
     }
 
-    // Write via the proven heredoc approach — single-quoted 'STREMIO_NGINX_EOF' means the shell
-    // does NOT expand $host, $1, $http_upgrade, etc. inside the heredoc content.
-    const tmpConf = `/tmp/stremio-nginx.${Date.now()}.conf`;
-    const writeResult = await this.execCommand(`cat > ${tmpConf} << 'STREMIO_NGINX_EOF'\n${nginxConfig}\nSTREMIO_NGINX_EOF`);
-    if (writeResult.code !== 0) {
-      throw new Error(`Failed to write nginx config to temp file: ${writeResult.stderr}`);
+    // ------------------------------------------------------------------
+    // Step 3: Transfer the generated config to the server.
+    // For remote targets we use SFTP (NodeSSH putFile) — avoids all shell
+    // escaping issues with nginx variables ($host, $1, $http_upgrade, etc.).
+    // For local targets we write directly to a temp path.
+    // ------------------------------------------------------------------
+    const fsP = await import('node:fs/promises');
+    const osModule = await import('node:os');
+    const timestamp = Date.now();
+    const remoteTemp = `/tmp/stremio-nginx-${timestamp}.conf`;
+
+    if (this.ssh) {
+      const localTemp = path.join(osModule.tmpdir(), `stremio-nginx-${timestamp}.conf`);
+      await fsP.writeFile(localTemp, nginxConfig, 'utf-8');
+      try {
+        // SFTP transferFile: bypasses the SSH exec channel entirely — 100% reliable for binary/text content.
+        await this.ssh.transferFile(localTemp, remoteTemp);
+      } finally {
+        await fsP.unlink(localTemp).catch(() => {});
+      }
+    } else {
+      await fsP.writeFile(remoteTemp, nginxConfig, 'utf-8');
     }
 
-    // Verify the file was written and is non-empty
-    const sizeCheck = await this.execCommand(`test -s "${tmpConf}" && echo "OK" || echo "EMPTY"`);
-    if (!sizeCheck.stdout.trim().includes('OK')) {
-      throw new Error('Nginx config temp file is empty after write — heredoc failed');
+    // Verify the written file is non-empty (SFTP errors are silent otherwise)
+    const sizeCheck = await this.execCommand(`test -s "${remoteTemp}" && echo "OK" || echo "EMPTY"`);
+    if (!sizeCheck.stdout.includes('OK')) {
+      throw new Error('Nginx config upload produced an empty file — aborting to protect existing config.');
     }
 
-    // If we're adding party blocks, verify they're actually in the file
+    // If we're adding party blocks, verify they're in the uploaded file
     if (partyPort !== null) {
-      const blockCheck = await this.execCommand(`grep -c 'location = /party' "${tmpConf}" 2>/dev/null || echo "0"`);
+      const blockCheck = await this.execCommand(`grep -c 'location = /party' "${remoteTemp}" 2>/dev/null || echo "0"`);
       if ((parseInt(blockCheck.stdout.trim()) || 0) === 0) {
-        throw new Error('Party location block is missing from the generated nginx config');
+        await this.execCommand(`rm -f "${remoteTemp}"`).catch(() => {});
+        throw new Error('Party location block is missing from the uploaded nginx config.');
       }
     }
 
-    // Back up existing config and replace
-    await this.execSudo(`cp "${addonNginxConf}" "${addonNginxConf}.bak" 2>/dev/null || true`);
-    const mvResult = await this.execSudo(`mv "${tmpConf}" "${addonNginxConf}"`);
+    // ------------------------------------------------------------------
+    // Step 4: Backup → swap → test → rollback-if-failed.
+    // ------------------------------------------------------------------
+    const backupPath = `${addonNginxConf}.pre-party-bak`;
+    await this.execSudo(`cp "${addonNginxConf}" "${backupPath}"`);
+
+    const mvResult = await this.execSudo(`mv "${remoteTemp}" "${addonNginxConf}"`);
     if (mvResult.code !== 0) {
+      await this.execCommand(`rm -f "${remoteTemp}"`).catch(() => {});
       throw new Error(`Failed to move nginx config into place: ${mvResult.stderr}`);
     }
 
-    // Ensure symlink in sites-enabled points to this config
+    // Ensure the symlink is intact
     await this.execSudo(`ln -sf "${addonNginxConf}" /etc/nginx/sites-enabled/${serviceName}`);
 
-    // Remove the old (now-obsolete) separate party server config if it exists
-    await this.execSudo(`rm -f /etc/nginx/sites-enabled/stremio-party-server`).catch(() => {});
-    await this.execSudo(`rm -f /etc/nginx/sites-available/stremio-party-server`).catch(() => {});
+    // Remove any old separate party-server config that would conflict
+    await this.execSudo(`rm -f /etc/nginx/sites-enabled/stremio-party-server /etc/nginx/sites-available/stremio-party-server`).catch(() => {});
 
     const testResult = await this.execSudo('nginx -t');
     if (testResult.code !== 0) {
-      // Restore the backup so the addon keeps working
-      await this.execSudo(`mv "${addonNginxConf}.bak" "${addonNginxConf}" 2>/dev/null || true`);
+      logger.error('nginx -t failed after party config write — restoring backup', { stderr: testResult.stderr });
+      await this.execSudo(`cp "${backupPath}" "${addonNginxConf}"`);
       await this.execSudo('systemctl reload nginx').catch(() => {});
-      throw new Error(`nginx -t failed after writing new config: ${testResult.stderr}`);
+      throw new Error(`nginx -t failed — original config restored.\nError: ${testResult.stderr}`);
     }
 
     await this.execSudo('systemctl reload nginx');
-    logger.info('Addon nginx config written', {
+
+    // ------------------------------------------------------------------
+    // Step 5: Post-reload health check — if nginx went down after the reload
+    // (e.g. runtime issue not caught by nginx -t), restore the backup immediately.
+    // ------------------------------------------------------------------
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    const nginxHealth = await this.execCommand('systemctl is-active nginx 2>&1');
+    if (nginxHealth.stdout.trim() !== 'active') {
+      logger.error('Nginx is not active after reload — restoring backup config and restarting');
+      await this.execSudo(`cp "${backupPath}" "${addonNginxConf}"`);
+      await this.execSudo('systemctl restart nginx').catch(() => {});
+      throw new Error('Nginx became inactive after reload — original config restored and nginx restarted.');
+    }
+
+    logger.info('Addon nginx config written and verified', {
       addonNginxConf,
       domain,
       addonPort,
       partyPort,
-      hasSSL: !!hasSSL,
+      hasSSL,
     });
   }
 
@@ -3837,6 +3908,7 @@ ${partyBlocks}
     serviceStatus: string;
     serviceLogs: string;
     portReachable: boolean;
+    servicePortEnv: string;
   }> {
     if (this.options.config.installation.type === 'remote' && !this.ssh) {
       await this.connectToRemote();
@@ -3847,10 +3919,8 @@ ${partyBlocks}
 
     const nginxRead = await this.execCommand(`cat "${nginxConfPath}" 2>&1`).catch(() => ({ stdout: '(error reading file)', code: 1, stderr: '' }));
     const nginxContent = nginxRead.stdout || '';
-    const nginxHasPartyBlocks = nginxContent.includes('BEGIN_PARTY_SERVER_LOCATIONS');
-    // Show last 60 lines of nginx config as snippet
-    const lines = nginxContent.split('\n');
-    const nginxConfigSnippet = lines.slice(-60).join('\n');
+    const nginxHasPartyBlocks = nginxContent.includes('location = /party') || nginxContent.includes('location /party/');
+    const nginxConfigSnippet = nginxContent.slice(0, 4000); // show the full config (up to 4KB)
 
     const statusResult = await this.execCommand(`systemctl is-active ${partyServiceName} 2>&1`).catch(() => ({ stdout: 'unknown', code: 1, stderr: '' }));
     const logsResult = await this.execCommand(`journalctl -u ${partyServiceName} --no-pager -n 20 2>&1`).catch(() => ({ stdout: '(no logs)', code: 0, stderr: '' }));
@@ -3859,6 +3929,11 @@ ${partyBlocks}
       `curl -sf --max-time 3 http://localhost:${partyPort}/ 2>/dev/null && echo "REACHABLE" || echo "UNREACHABLE"`
     ).catch(() => ({ stdout: 'UNREACHABLE', code: 1, stderr: '' }));
 
+    // Also check what port the service env actually sets (useful for spotting PORT vs PARTY_PORT mismatch)
+    const serviceEnvResult = await this.execCommand(
+      `grep -E 'Environment=(PORT|PARTY_PORT)' /etc/systemd/system/${partyServiceName}.service 2>/dev/null || echo "(not found)"`
+    ).catch(() => ({ stdout: '(error)', code: 1, stderr: '' }));
+
     return {
       nginxConfigPath: nginxConfPath,
       nginxHasPartyBlocks,
@@ -3866,6 +3941,7 @@ ${partyBlocks}
       serviceStatus: statusResult.stdout.trim(),
       serviceLogs: logsResult.stdout.slice(-2000),
       portReachable: portCheckResult.stdout.includes('REACHABLE'),
+      servicePortEnv: serviceEnvResult.stdout.trim(),
     };
   }
 

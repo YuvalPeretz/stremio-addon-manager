@@ -15,7 +15,7 @@ export interface PartyConfig {
 
 export function loadConfig(): PartyConfig {
   const config: PartyConfig = {
-    port: parseInt(process.env.PARTY_PORT || "7001", 10),
+    port: parseInt(process.env.PARTY_PORT || process.env.PORT || "7001", 10),
     maxSessions: parseInt(process.env.MAX_SESSIONS || "10", 10),
     maxViewersPerSession: parseInt(process.env.MAX_VIEWERS_PER_SESSION || "20", 10),
     sessionTimeoutMs: parseInt(process.env.SESSION_TIMEOUT_MS || String(4 * 60 * 60 * 1000), 10),
