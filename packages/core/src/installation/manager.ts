@@ -3005,7 +3005,15 @@ echo url="https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}
       }
       reportProgress('connect', 'Connected to server', 10);
 
-      // Step 2: Locate bundled party-server
+      // Step 2: Stop existing service if running (graceful update)
+      const existingStatus = await this.execCommand(`systemctl is-active ${partyServiceName} 2>/dev/null || true`);
+      if (existingStatus.stdout.trim() === 'active') {
+        reportProgress('clone_repository', 'Stopping existing party-server for update...', 12);
+        await this.execSudo(`systemctl stop ${partyServiceName}`).catch(() => {});
+        logger.info('Stopped existing party-server service');
+      }
+
+      // Step 3: Locate bundled party-server
       reportProgress('clone_repository', 'Locating bundled party-server...', 15);
       const bundledPath = await this.getBundledPartyServerPath();
       if (!bundledPath) {
@@ -3013,7 +3021,12 @@ echo url="https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}
       }
       logger.info('Found bundled party-server', { bundledPath });
 
-      // Step 3: Copy files to target
+      // Step 4: Remove old installation directory to ensure clean update
+      reportProgress('clone_repository', 'Cleaning previous installation...', 17);
+      await this.execSudo(`rm -rf ${partyInstallDir}`).catch(() => {});
+      await this.execSudo(`mkdir -p ${partyInstallDir}`).catch(() => {});
+
+      // Step 5: Copy files to target
       reportProgress('clone_repository', 'Copying party-server files...', 20);
       await this.copyBundledPackage(bundledPath, partyInstallDir, 'party-server');
       reportProgress('clone_repository', 'Party-server files copied', 35);
@@ -3099,9 +3112,9 @@ WantedBy=multi-user.target
       await this.setupPartyNginx(domain, partyPort, partyServiceName);
       reportProgress('setup_nginx', 'Nginx configured', 88);
 
-      // Step 9: Start service
+      // Step 9: Start (or restart) service
       reportProgress('start_service', 'Starting party-server...', 90);
-      const startResult = await this.execSudo(`systemctl start ${partyServiceName}`);
+      const startResult = await this.execSudo(`systemctl restart ${partyServiceName}`);
       if (startResult.code !== 0) {
         logger.warn('Party server start returned non-zero', { stderr: startResult.stderr });
       }

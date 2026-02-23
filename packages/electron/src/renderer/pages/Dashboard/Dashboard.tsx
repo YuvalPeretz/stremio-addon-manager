@@ -299,7 +299,7 @@ function Dashboard() {
       {/* Party Server Card */}
       {(config || selectedAddon) && (
         <Card title="Party Viewing Server">
-          {partyStatus.installed ? (
+          {partyStatus.installed && !partyInstalling ? (
             <Flex vertical gap={12}>
               <Flex justify="space-between" align="center">
                 <Text>Status</Text>
@@ -317,6 +317,9 @@ function Dashboard() {
                 <Text>Party URL</Text>
                 <Text copyable>{`https://${config?.addon?.domain || selectedAddon?.domain}/party`}</Text>
               </Flex>
+              <Button icon={<FiRotateCw />} onClick={handleInstallParty}>
+                Update Party Server
+              </Button>
             </Flex>
           ) : partyInstalling ? (
             <Flex vertical gap={12}>

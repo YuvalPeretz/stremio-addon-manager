@@ -158,7 +158,9 @@ export async function resolveStream(
       ? `${imdbId}:${season}:${episode}`
       : imdbId;
 
-  const url = `${baseUrl}/${password}/stream/${type}/${stremioId}.json`;
+  const url = password
+    ? `${baseUrl}/${password}/stream/${type}/${stremioId}.json`
+    : `${baseUrl}/stream/${type}/${stremioId}.json`;
   console.log(`Resolving stream: ${url}`);
 
   try {

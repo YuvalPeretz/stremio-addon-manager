@@ -76,7 +76,7 @@ export function createServer(
     try {
       const { addonUrl, addonPassword, sessionName } = req.body as CreateSessionRequest;
 
-      if (!addonUrl || !addonPassword || !sessionName) {
+      if (!addonUrl || addonPassword === undefined || addonPassword === null || !sessionName) {
         res.status(400).json({ error: "addonUrl, addonPassword, and sessionName are required" });
         return;
       }
