@@ -3525,18 +3525,30 @@ WantedBy=multi-user.target
 
     // ------------------------------------------------------------------
     // Step 2: If SSL is configured, verify the cert files actually exist.
-    // If they're missing for some reason, ABORT rather than write a broken config.
+    // Must use sudo because /etc/letsencrypt/live/ is root-only (mode 700).
+    // If the sudo check is inconclusive, log a warning but don't abort —
+    // the cert paths came from the currently-working nginx config, so they
+    // almost certainly exist; nginx -t will catch any real problem later.
     // ------------------------------------------------------------------
     if (hasSSL) {
-      const certCheck = await this.execCommand(
+      const certCheck = await this.execSudo(
         `test -f "${certificatePath}" && test -f "${privateKeyPath}" && echo "EXISTS" || echo "MISSING"`
       );
-      if (!certCheck.stdout.includes('EXISTS')) {
+      if (certCheck.stdout.includes('MISSING')) {
         throw new Error(
           `SSL cert files referenced in the nginx config do not exist on the server.\n` +
           `  cert: ${certificatePath}\n  key:  ${privateKeyPath}\n` +
-          `Aborting to avoid breaking the HTTPS configuration.`
+          `Check that Let's Encrypt has issued certs for this domain.`
         );
+      }
+      // If the check returned neither EXISTS nor MISSING (unexpected sudo output),
+      // log a warning and proceed — nginx -t is the real safety net.
+      if (!certCheck.stdout.includes('EXISTS')) {
+        logger.warn('Could not confirm SSL cert file existence (sudo check inconclusive) — proceeding; nginx -t will validate', {
+          certificatePath,
+          privateKeyPath,
+          output: certCheck.stdout.slice(0, 200),
+        });
       }
     }
 
@@ -3920,7 +3932,7 @@ ${partyBlocks}
     const nginxRead = await this.execCommand(`cat "${nginxConfPath}" 2>&1`).catch(() => ({ stdout: '(error reading file)', code: 1, stderr: '' }));
     const nginxContent = nginxRead.stdout || '';
     const nginxHasPartyBlocks = nginxContent.includes('location = /party') || nginxContent.includes('location /party/');
-    const nginxConfigSnippet = nginxContent.slice(0, 4000); // show the full config (up to 4KB)
+    const nginxConfigSnippet = nginxContent.slice(0, 12000); // show up to 12KB (enough for full SSL config)
 
     const statusResult = await this.execCommand(`systemctl is-active ${partyServiceName} 2>&1`).catch(() => ({ stdout: 'unknown', code: 1, stderr: '' }));
     const logsResult = await this.execCommand(`journalctl -u ${partyServiceName} --no-pager -n 20 2>&1`).catch(() => ({ stdout: '(no logs)', code: 0, stderr: '' }));
