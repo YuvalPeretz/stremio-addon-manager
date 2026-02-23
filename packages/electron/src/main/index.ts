@@ -1289,6 +1289,66 @@ function setupIPC() {
     }
   });
 
+  // Party Server Deployment
+  ipcMain.handle("party:install", async (_event, options: { addonId?: string; port?: number; addonUrl: string }) => {
+    try {
+      const addonId = options.addonId;
+      const configManager = new ConfigManager(addonId);
+      const config = await configManager.load();
+
+      if (!config) {
+        return { success: false, error: "No addon configuration found. Install an addon first." };
+      }
+
+      // Set Electron resource paths for bundled package resolution
+      const electronAppPath = app.getAppPath();
+      const electronResourcesPath =
+        typeof (process as any).resourcesPath !== "undefined"
+          ? (process as any).resourcesPath
+          : path.join(electronAppPath, "resources");
+      process.env.ELECTRON_APP_PATH = electronAppPath;
+      process.env.ELECTRON_RESOURCES_PATH = electronResourcesPath;
+
+      const installManager = new InstallationManager({
+        config,
+        progressCallback: (progress: InstallationProgress) => {
+          mainWindow?.webContents.send("party:progress", progress);
+        },
+      });
+
+      const result = await installManager.deployPartyServer({
+        port: options.port,
+        addonUrl: options.addonUrl,
+        progressCallback: (progress: InstallationProgress) => {
+          mainWindow?.webContents.send("party:progress", progress);
+        },
+      });
+
+      return { success: result.success, data: result };
+    } catch (error) {
+      logger.error("Party server installation failed", error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
+  ipcMain.handle("party:status", async (_event, addonId?: string) => {
+    try {
+      const configManager = new ConfigManager(addonId);
+      const config = await configManager.load();
+
+      if (!config) {
+        return { success: true, data: { installed: false, active: false } };
+      }
+
+      const installManager = new InstallationManager({ config });
+      const status = await installManager.getPartyServerStatus();
+      return { success: true, data: status };
+    } catch (error) {
+      logger.error("Party server status check failed", error);
+      return { success: true, data: { installed: false, active: false } };
+    }
+  });
+
   logger.info("IPC handlers registered");
 }
 

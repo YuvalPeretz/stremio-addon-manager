@@ -5,7 +5,7 @@
 
 import { useEffect, useState } from "react";
 import { useAtom } from "jotai";
-import { Card, Flex, Typography, Button, Tag, Spin, Alert, Modal, message } from "antd";
+import { Card, Flex, Typography, Button, Tag, Spin, Alert, Modal, Progress, message } from "antd";
 import { FiPlay, FiPause, FiRotateCw, FiDownload, FiSettings } from "react-icons/fi";
 import { useNavigate } from "react-router-dom";
 import { configAtom, configExistsAtom } from "../../atoms/configAtoms";
@@ -14,6 +14,12 @@ import { selectedAddonIdAtom, selectedAddonAtom } from "../../atoms/addonAtoms";
 import styles from "./Dashboard.module.scss";
 
 const { Title, Text, Paragraph } = Typography;
+
+interface PartyStatus {
+  installed: boolean;
+  active: boolean;
+  port?: number;
+}
 
 function Dashboard() {
   const navigate = useNavigate();
@@ -25,12 +31,28 @@ function Dashboard() {
   const [selectedAddon] = useAtom(selectedAddonAtom);
 
   const [migrationModalVisible, setMigrationModalVisible] = useState(false);
+  const [partyStatus, setPartyStatus] = useState<PartyStatus>({ installed: false, active: false });
+  const [partyInstalling, setPartyInstalling] = useState(false);
+  const [partyProgress, setPartyProgress] = useState(0);
+  const [partyProgressMsg, setPartyProgressMsg] = useState("");
 
   useEffect(() => {
     checkMigration();
     loadConfig();
     loadServiceStatus();
+    loadPartyStatus();
   }, [selectedAddonId]);
+
+  useEffect(() => {
+    if (!partyInstalling) return;
+    window.electron.party.onProgress((progress: any) => {
+      setPartyProgress(progress.progress || 0);
+      setPartyProgressMsg(progress.message || "");
+    });
+    return () => {
+      window.electron.party.removeProgressListener();
+    };
+  }, [partyInstalling]);
 
   async function checkMigration() {
     try {
@@ -90,6 +112,54 @@ function Dashboard() {
     setServiceLoading(true);
     await window.electron.service[action](undefined, selectedAddonId || undefined);
     await loadServiceStatus();
+  }
+
+  async function loadPartyStatus() {
+    try {
+      const result = await window.electron.party.status(selectedAddonId || undefined);
+      if (result.success && result.data) {
+        setPartyStatus(result.data);
+      }
+    } catch {
+      // Silently ignore - party feature may not be available
+    }
+  }
+
+  async function handleInstallParty() {
+    if (!config?.addon?.domain || !config?.addon?.password) {
+      message.error("Addon domain and password are required to install the party server");
+      return;
+    }
+
+    const addonUrl = `https://${config.addon.domain}/${config.addon.password}`;
+
+    setPartyInstalling(true);
+    setPartyProgress(0);
+    setPartyProgressMsg("Starting party server deployment...");
+
+    try {
+      const result = await window.electron.party.install({
+        addonId: selectedAddonId || undefined,
+        addonUrl,
+      });
+
+      if (result.success && result.data?.success) {
+        message.success("Party server installed successfully!");
+        if (result.data.partyUrl) {
+          message.info(`Party URL: ${result.data.partyUrl}`);
+        }
+      } else {
+        message.error(result.data?.error || result.error || "Party server installation failed");
+      }
+    } catch (error) {
+      message.error("Party server installation failed");
+      console.error(error);
+    } finally {
+      setPartyInstalling(false);
+      setPartyProgress(0);
+      setPartyProgressMsg("");
+      loadPartyStatus();
+    }
   }
 
   function getStatusColor(status?: string) {
@@ -223,6 +293,46 @@ function Dashboard() {
               </>
             )}
           </Flex>
+        </Card>
+      )}
+
+      {/* Party Server Card */}
+      {serviceStatus?.status === "active" && (config || selectedAddon) && (
+        <Card title="Party Viewing Server">
+          {partyStatus.installed ? (
+            <Flex vertical gap={12}>
+              <Flex justify="space-between" align="center">
+                <Text>Status</Text>
+                <Tag color={partyStatus.active ? "success" : "default"}>
+                  {partyStatus.active ? "RUNNING" : "STOPPED"}
+                </Tag>
+              </Flex>
+              {partyStatus.port && (
+                <Flex justify="space-between">
+                  <Text>Port</Text>
+                  <Text>{partyStatus.port}</Text>
+                </Flex>
+              )}
+              <Flex justify="space-between">
+                <Text>Party URL</Text>
+                <Text copyable>{`https://${config?.addon?.domain || selectedAddon?.domain}/party`}</Text>
+              </Flex>
+            </Flex>
+          ) : partyInstalling ? (
+            <Flex vertical gap={12}>
+              <Text>{partyProgressMsg || "Deploying party server..."}</Text>
+              <Progress percent={partyProgress} status="active" />
+            </Flex>
+          ) : (
+            <Flex vertical gap={12}>
+              <Text type="secondary">
+                Deploy a party viewing server alongside your addon. Host watch-together sessions where friends can stream in sync.
+              </Text>
+              <Button type="primary" onClick={handleInstallParty} disabled={partyInstalling}>
+                Install Party!
+              </Button>
+            </Flex>
+          )}
         </Card>
       )}
 

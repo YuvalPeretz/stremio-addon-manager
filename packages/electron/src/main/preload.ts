@@ -111,6 +111,19 @@ const api = {
     test: (id: string) => ipcRenderer.invoke("profile:test", id),
   },
 
+  // Party Server
+  party: {
+    install: (options: { addonId?: string; port?: number; addonUrl: string }) =>
+      ipcRenderer.invoke("party:install", options),
+    status: (addonId?: string) => ipcRenderer.invoke("party:status", addonId),
+    onProgress: (callback: (progress: unknown) => void) => {
+      ipcRenderer.on("party:progress", (_event, progress) => callback(progress));
+    },
+    removeProgressListener: () => {
+      ipcRenderer.removeAllListeners("party:progress");
+    },
+  },
+
   // Update Management
   update: {
     check: (addonId?: string) => ipcRenderer.invoke("update:check", addonId),

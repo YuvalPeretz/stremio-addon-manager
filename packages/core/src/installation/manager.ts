@@ -2972,6 +2972,472 @@ echo url="https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}
   }
 
   /**
+   * Deploy party-server to the same target machine as the addon-server.
+   * Reuses the existing SSH connection and paths from the addon config.
+   * This is a standalone deployment flow: copy files, npm install, create service, configure nginx, start.
+   */
+  public async deployPartyServer(partyOptions: {
+    port?: number;
+    addonUrl: string;
+    progressCallback?: ProgressCallback;
+  }): Promise<{ success: boolean; partyUrl?: string; error?: string }> {
+    const partyPort = partyOptions.port || 7777;
+    const partyServiceName = 'stremio-party-server';
+    const partyInstallDir = '/opt/stremio-party-server';
+    const domain = this.options.config.addon.domain;
+    const progressCb = partyOptions.progressCallback || this.progressCallback;
+
+    const reportProgress = (step: string, message: string, progress: number) => {
+      progressCb?.({
+        step: step as InstallationStep,
+        status: StepStatus.IN_PROGRESS,
+        message,
+        progress,
+        timestamp: new Date(),
+      });
+    };
+
+    try {
+      // Step 1: Connect if remote and not already connected
+      if (this.options.config.installation.type === 'remote' && !this.ssh) {
+        reportProgress('connect', 'Connecting to remote server...', 5);
+        await this.connectToRemote();
+      }
+      reportProgress('connect', 'Connected to server', 10);
+
+      // Step 2: Locate bundled party-server
+      reportProgress('clone_repository', 'Locating bundled party-server...', 15);
+      const bundledPath = await this.getBundledPartyServerPath();
+      if (!bundledPath) {
+        return { success: false, error: 'Bundled party-server not found. Make sure the party-server package is built and bundled in CLI resources.' };
+      }
+      logger.info('Found bundled party-server', { bundledPath });
+
+      // Step 3: Copy files to target
+      reportProgress('clone_repository', 'Copying party-server files...', 20);
+      await this.copyBundledPackage(bundledPath, partyInstallDir, 'party-server');
+      reportProgress('clone_repository', 'Party-server files copied', 35);
+
+      // Step 4: Install npm dependencies
+      reportProgress('install_dependencies', 'Installing party-server dependencies...', 40);
+      const packageJsonPath = this.ssh ? path.posix.join(partyInstallDir, 'package.json') : path.join(partyInstallDir, 'package.json');
+      const packageJsonExists = await this.checkPathExists(packageJsonPath, !this.ssh);
+      if (!packageJsonExists) {
+        return { success: false, error: `package.json not found at ${packageJsonPath} after copy.` };
+      }
+      const npmResult = await this.execCommand(`cd ${partyInstallDir} && npm install --production`);
+      if (npmResult.code !== 0) {
+        return { success: false, error: `npm install failed: ${npmResult.stderr}` };
+      }
+      reportProgress('install_dependencies', 'Dependencies installed', 55);
+
+      // Step 5: Create entry point (server.js)
+      reportProgress('create_service', 'Creating party-server entry point...', 58);
+      const serverJsContent = `#!/usr/bin/env node\nimport "./dist/index.js";\n`;
+      const serverJsPath = this.ssh ? path.posix.join(partyInstallDir, 'server.js') : path.join(partyInstallDir, 'server.js');
+      if (this.ssh) {
+        const tmpFile = `/tmp/party-server-entry.${Date.now()}.js`;
+        await this.execCommand(`cat > "${tmpFile}" << 'EOFMARKER'\n${serverJsContent}EOFMARKER`);
+        await this.execSudo(`mv "${tmpFile}" "${serverJsPath}" && chmod +x "${serverJsPath}"`);
+      } else {
+        const fsModule = await import('fs');
+        fsModule.writeFileSync(serverJsPath, serverJsContent);
+        fsModule.chmodSync(serverJsPath, 0o755);
+      }
+
+      // Step 6: Open firewall port if firewall is enabled
+      if (this.options.config.features.firewall) {
+        reportProgress('setup_firewall', 'Opening firewall port for party-server...', 60);
+        await this.execSudo(`ufw allow ${partyPort}/tcp`).catch(() => {});
+      }
+
+      // Step 7: Create systemd service
+      reportProgress('create_service', 'Creating party-server systemd service...', 65);
+      const nodeCheck = await this.execCommand('which node 2>/dev/null || echo "/usr/bin/node"');
+      const nodePath = nodeCheck.stdout.trim() || '/usr/bin/node';
+
+      const serviceConfig = `
+[Unit]
+Description=Stremio Party Viewing Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${partyInstallDir}
+ExecStart=${nodePath} ${partyInstallDir}/server.js
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+Environment=NODE_ENV=production
+Environment=PORT=${partyPort}
+Environment=PARTY_ADDON_URL=${partyOptions.addonUrl}
+
+[Install]
+WantedBy=multi-user.target
+`;
+
+      const servicePath = `/etc/systemd/system/${partyServiceName}.service`;
+      if (this.ssh) {
+        const tmpService = `/tmp/${partyServiceName}.service.${Date.now()}`;
+        await this.execCommand(`cat > ${tmpService} << 'EOF'\n${serviceConfig}\nEOF`);
+        await this.execSudo(`mv ${tmpService} ${servicePath}`);
+      } else {
+        const fsP = await import('node:fs/promises');
+        const tmpService = `/tmp/${partyServiceName}.service.${Date.now()}`;
+        await fsP.writeFile(tmpService, serviceConfig, 'utf-8');
+        await execAsync(`sudo mv ${tmpService} ${servicePath}`);
+      }
+
+      await this.execSudo('systemctl daemon-reload');
+      await this.execSudo(`systemctl enable ${partyServiceName}`);
+      reportProgress('create_service', 'Systemd service created', 75);
+
+      // Step 8: Configure Nginx for party-server (add to existing domain config)
+      reportProgress('setup_nginx', 'Configuring Nginx for party-server...', 80);
+      await this.setupPartyNginx(domain, partyPort, partyServiceName);
+      reportProgress('setup_nginx', 'Nginx configured', 88);
+
+      // Step 9: Start service
+      reportProgress('start_service', 'Starting party-server...', 90);
+      const startResult = await this.execSudo(`systemctl start ${partyServiceName}`);
+      if (startResult.code !== 0) {
+        logger.warn('Party server start returned non-zero', { stderr: startResult.stderr });
+      }
+
+      // Brief wait then verify
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      const statusResult = await this.execCommand(`systemctl is-active ${partyServiceName}`);
+      const isActive = statusResult.stdout.trim() === 'active';
+
+      if (!isActive) {
+        const logs = await this.execCommand(`journalctl -u ${partyServiceName} --no-pager -n 20`);
+        logger.warn('Party server may not be running', { status: statusResult.stdout.trim(), logs: logs.stdout });
+      }
+
+      reportProgress('complete', 'Party server deployed successfully!', 100);
+      progressCb?.({
+        step: 'complete' as InstallationStep,
+        status: StepStatus.COMPLETED,
+        message: 'Party server deployed successfully!',
+        progress: 100,
+        timestamp: new Date(),
+      });
+
+      const partyUrl = `https://${domain}/party`;
+      logger.info('Party server deployed', { partyUrl, port: partyPort, isActive });
+      return { success: true, partyUrl };
+    } catch (error) {
+      const errorMsg = (error as Error).message;
+      logger.error('Party server deployment failed', { error: errorMsg });
+      progressCb?.({
+        step: 'complete' as InstallationStep,
+        status: StepStatus.FAILED,
+        message: `Deployment failed: ${errorMsg}`,
+        progress: 0,
+        error: error as Error,
+        timestamp: new Date(),
+      });
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  /**
+   * Get the status of the party-server service (if deployed)
+   */
+  public async getPartyServerStatus(): Promise<{ installed: boolean; active: boolean; port?: number }> {
+    try {
+      if (this.options.config.installation.type === 'remote' && !this.ssh) {
+        await this.connectToRemote();
+      }
+
+      const serviceName = 'stremio-party-server';
+      const serviceCheck = await this.execCommand(`systemctl is-active ${serviceName} 2>/dev/null`);
+      const active = serviceCheck.stdout.trim() === 'active';
+
+      const fileCheck = await this.execCommand(`test -f /etc/systemd/system/${serviceName}.service && echo "YES" || echo "NO"`);
+      const installed = fileCheck.stdout.trim() === 'YES';
+
+      let port: number | undefined;
+      if (installed) {
+        const envResult = await this.execCommand(`grep 'Environment=PORT=' /etc/systemd/system/${serviceName}.service 2>/dev/null`);
+        const match = envResult.stdout.match(/PORT=(\d+)/);
+        if (match) port = parseInt(match[1], 10);
+      }
+
+      return { installed, active, port };
+    } catch {
+      return { installed: false, active: false };
+    }
+  }
+
+  /**
+   * Get path to bundled party-server (mirrors getBundledAddonServerPath pattern)
+   */
+  private async getBundledPartyServerPath(): Promise<string | null> {
+    return this.getBundledPackagePath('party-server');
+  }
+
+  /**
+   * Generic method to locate a bundled package by name.
+   * Checks paths in priority order: Electron resources -> CLI resources -> Monorepo
+   */
+  private async getBundledPackagePath(packageName: string): Promise<string | null> {
+    const corePackageDir = __dirname;
+    const coreDistDir = path.dirname(corePackageDir);
+    const coreRootDir = path.dirname(coreDistDir);
+    const packagesDir = path.dirname(coreRootDir);
+
+    const pathChecks: Array<{ path: string; description: string }> = [];
+
+    // 1. Electron packaged (from env)
+    if (process.env.ELECTRON_RESOURCES_PATH) {
+      pathChecks.push({ path: path.join(process.env.ELECTRON_RESOURCES_PATH, 'cli', 'resources', packageName), description: `Electron packaged (env) ${packageName}` });
+    }
+    // 2. Electron packaged (process.resourcesPath)
+    if (typeof (process as any).resourcesPath !== 'undefined') {
+      pathChecks.push({ path: path.join((process as any).resourcesPath, 'cli', 'resources', packageName), description: `Electron packaged ${packageName}` });
+    }
+    // 3. Electron dev (from env)
+    if (process.env.ELECTRON_APP_PATH) {
+      pathChecks.push({ path: path.join(process.env.ELECTRON_APP_PATH, 'resources', 'cli', 'resources', packageName), description: `Electron dev (env) ${packageName}` });
+    }
+    // 4. CLI packaged (from core)
+    pathChecks.push({ path: path.join(coreRootDir, '..', packageName), description: `CLI packaged (from core) ${packageName}` });
+    // 5. CLI packaged (from cwd)
+    pathChecks.push({ path: path.join(process.cwd(), 'resources', packageName), description: `CLI packaged (cwd) ${packageName}` });
+    // 6. Monorepo (from core)
+    pathChecks.push({ path: path.join(packagesDir, packageName), description: `Monorepo (from core) ${packageName}` });
+    // 7. Monorepo (from cwd)
+    pathChecks.push({ path: path.join(process.cwd(), 'packages', packageName), description: `Monorepo (cwd) ${packageName}` });
+    // 8. Electron monorepo
+    pathChecks.push({ path: path.join(packagesDir, 'electron', 'resources', 'cli', 'resources', packageName), description: `Electron monorepo ${packageName}` });
+
+    logger.debug(`Looking for bundled ${packageName}`, { totalPaths: pathChecks.length });
+
+    for (const check of pathChecks) {
+      try {
+        const packageJsonPath = path.join(check.path, 'package.json');
+        const distPath = path.join(check.path, 'dist');
+        const packageExists = await this.checkPathExists(packageJsonPath, true);
+        const distExists = await this.checkPathExists(distPath, true);
+        if (packageExists && distExists) {
+          logger.info(`Found bundled ${packageName}`, { path: check.path, description: check.description });
+          return check.path;
+        }
+      } catch {
+        // Continue
+      }
+    }
+
+    logger.warn(`Bundled ${packageName} not found in any expected location`);
+    return null;
+  }
+
+  /**
+   * Generic copy of a bundled package to a target directory (mirrors copyBundledAddonServer pattern)
+   */
+  private async copyBundledPackage(sourcePath: string, targetDir: string, packageLabel: string): Promise<void> {
+    const whoamiResult = await this.execCommand('whoami');
+    const username = whoamiResult.stdout.trim() || whoamiResult.stderr.trim() || 'root';
+
+    // Remove existing directory
+    const dirExists = await this.execCommand(`test -d ${targetDir}`);
+    if (dirExists.code === 0) {
+      logger.info(`Removing existing ${packageLabel} directory`, { targetDir });
+      await this.execSudo(`rm -rf ${targetDir}`);
+    }
+
+    if (this.ssh) {
+      const tempTargetDir = `/tmp/stremio-${packageLabel}-install.${Date.now()}`;
+      logger.info(`Copying bundled ${packageLabel} via SSH`, { sourcePath, tempTargetDir });
+
+      const fsModule = await import('fs');
+      if (!fsModule.existsSync(sourcePath)) {
+        throw new Error(`Source directory does not exist: ${sourcePath}`);
+      }
+
+      await this.execCommand(`mkdir -p ${tempTargetDir}`);
+
+      const sshInstance = (this.ssh as any).ssh;
+      if (sshInstance && typeof sshInstance.putDirectory === 'function') {
+        let filesTransferred = 0;
+        await sshInstance.putDirectory(sourcePath, tempTargetDir, {
+          recursive: true,
+          concurrency: 5,
+          validate: (itemPath: string) => {
+            const relativePath = path.relative(sourcePath, itemPath);
+            return !relativePath.includes('node_modules');
+          },
+          tick: (_localPath: string, _remotePath: string, error?: Error) => {
+            if (!error) filesTransferred++;
+          },
+        });
+        logger.info(`putDirectory completed for ${packageLabel}`, { filesTransferred });
+
+        const fileCountResult = await this.execCommand(`find ${tempTargetDir} -type f | wc -l`);
+        if ((parseInt(fileCountResult.stdout.trim()) || 0) === 0) {
+          throw new Error(`Temp directory is empty after copy for ${packageLabel}`);
+        }
+
+        await this.execSudo(`rm -rf ${targetDir}`);
+        const moveResult = await this.execSudo(`mv ${tempTargetDir} ${targetDir}`);
+        if (moveResult.code !== 0) {
+          await this.execSudo(`mkdir -p ${targetDir}`);
+          await this.execSudo(`cp -r ${tempTargetDir}/. ${targetDir}/ && rm -rf ${tempTargetDir}`);
+        }
+      } else {
+        await (this.ssh as any).transferDirectory(sourcePath, tempTargetDir);
+        await this.execSudo(`rm -rf ${targetDir}`);
+        await this.execSudo(`mv ${tempTargetDir} ${targetDir}`);
+      }
+    } else {
+      const fsModule = await import('fs');
+      fsModule.mkdirSync(targetDir, { recursive: true });
+      const copyRecursive = (src: string, dest: string) => {
+        const entries = fsModule.readdirSync(src, { withFileTypes: true });
+        fsModule.mkdirSync(dest, { recursive: true });
+        for (const entry of entries) {
+          if (entry.name === 'node_modules') continue;
+          const srcPath = path.join(src, entry.name);
+          const destPath = path.join(dest, entry.name);
+          if (entry.isDirectory()) {
+            copyRecursive(srcPath, destPath);
+          } else {
+            fsModule.copyFileSync(srcPath, destPath);
+          }
+        }
+      };
+      copyRecursive(sourcePath, targetDir);
+    }
+
+    // Fix ownership
+    await this.execSudo(`chown -R ${username}:${username} ${targetDir}`).catch(() => {});
+    await this.execSudo(`chmod -R u+rwX,go+rX ${targetDir}`).catch(() => {});
+
+    logger.info(`Bundled ${packageLabel} copied successfully`, { targetDir });
+  }
+
+  /**
+   * Setup Nginx location block for party-server.
+   * Adds /party/* proxy rules to the existing domain nginx config (or creates a new one).
+   */
+  private async setupPartyNginx(domain: string, partyPort: number, _partyServiceName: string): Promise<void> {
+    const nginxConfPath = `/etc/nginx/sites-available/stremio-party-server`;
+    const existingCert = await this.checkExistingCertificate(domain);
+    const hasSSL = existingCert && existingCert.isValid;
+
+    let nginxConfig: string;
+    if (hasSSL) {
+      nginxConfig = `
+# Party server - uses existing SSL certificate from addon
+server {
+    listen 443 ssl;
+    server_name ${domain};
+
+    ssl_certificate ${existingCert!.certificatePath};
+    ssl_certificate_key ${existingCert!.privateKeyPath};
+
+    # Party API endpoints
+    location /party/ {
+        proxy_pass http://localhost:${partyPort}/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 75s;
+
+        # CORS
+        add_header Access-Control-Allow-Origin * always;
+        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin * always;
+            add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+            add_header Content-Length 0;
+            return 204;
+        }
+    }
+
+    # Party WebSocket endpoint
+    location /party/ws/ {
+        proxy_pass http://localhost:${partyPort}/ws/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+    }
+}
+`;
+    } else {
+      nginxConfig = `
+# Party server - HTTP only
+server {
+    listen 80;
+    server_name ${domain};
+
+    location /party/ {
+        proxy_pass http://localhost:${partyPort}/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+
+        add_header Access-Control-Allow-Origin * always;
+        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin * always;
+            add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+            add_header Content-Length 0;
+            return 204;
+        }
+    }
+
+    location /party/ws/ {
+        proxy_pass http://localhost:${partyPort}/ws/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+    }
+}
+`;
+    }
+
+    const tmpConf = `/tmp/stremio-party-nginx.${Date.now()}.conf`;
+    await this.execCommand(`cat > ${tmpConf} << 'EOF'\n${nginxConfig}\nEOF`);
+    await this.execSudo(`mv ${tmpConf} ${nginxConfPath}`);
+    await this.execSudo(`ln -sf ${nginxConfPath} /etc/nginx/sites-enabled/stremio-party-server`);
+
+    const testResult = await this.execSudo('nginx -t');
+    if (testResult.code !== 0) {
+      // Roll back on failure
+      await this.execSudo(`rm -f /etc/nginx/sites-enabled/stremio-party-server`);
+      await this.execSudo(`rm -f ${nginxConfPath}`);
+      throw new Error(`Nginx configuration test failed after adding party-server: ${testResult.stderr}`);
+    }
+
+    await this.execSudo('systemctl reload nginx');
+    logger.info('Party-server Nginx configuration applied');
+  }
+
+  /**
    * Update service file with current configuration
    * This allows updating environment variables without reinstalling
    */

@@ -26,6 +26,10 @@ const packages = [
     name: 'addon-server',
     files: ['dist', 'package.json', 'README.md', 'bin', 'landing.html'],
   },
+  {
+    name: 'party-server',
+    files: ['dist', 'package.json'],
+  },
 ];
 
 console.log('📦 Copying packages to CLI resources...\n');
