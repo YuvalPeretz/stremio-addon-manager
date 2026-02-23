@@ -3234,10 +3234,10 @@ WantedBy=multi-user.target
     progressCallback?: (progress: InstallationProgress) => void
   ): Promise<{ success: boolean; error?: string }> {
     const config = this.options.config;
+    // The addon-server files live directly inside addonDirectory (not in a subdirectory).
+    // Initial install copies the bundled package to addonDirectory, npm installs there,
+    // and the service ExecStart points to addonDirectory/server.js.
     const addonDirectory = config.paths.addonDirectory;
-    const addonServerDir = this.ssh
-      ? path.posix.join(addonDirectory, 'addon-server')
-      : path.join(addonDirectory, 'addon-server');
     const serviceName = config.serviceName || 'stremio-addon';
 
     const report = (step: string, message: string, progress: number) => {
@@ -3262,13 +3262,11 @@ WantedBy=multi-user.target
       await this.execSudo(`systemctl stop ${serviceName}`).catch(() => {});
       report('create_service', 'Service stopped', 20);
 
-      // Step 2: Delete old addon-server directory
-      report('clone_repository', 'Removing old addon-server files...', 25);
-      await this.execSudo(`rm -rf ${addonServerDir}`).catch(() => {});
-      report('clone_repository', 'Old files removed', 30);
-
-      // Step 3: Copy fresh bundled addon-server
-      report('clone_repository', 'Copying new addon-server files...', 35);
+      // Step 2: Copy fresh bundled addon-server.
+      // copyBundledAddonServer internally removes the existing addonDirectory and copies
+      // all bundled files (dist/, bin/server.js, package.json, landing.html) into it,
+      // then creates the root-level server.js shim.
+      report('clone_repository', 'Copying new addon-server files...', 30);
       const bundledPath = await this.getBundledAddonServerPath();
       if (!bundledPath) {
         return { success: false, error: 'Bundled addon-server not found. Run npm run build first.' };
@@ -3276,15 +3274,15 @@ WantedBy=multi-user.target
       await this.copyBundledAddonServer(bundledPath, addonDirectory);
       report('clone_repository', 'New files copied', 60);
 
-      // Step 4: Install npm dependencies
+      // Step 3: Install npm dependencies in addonDirectory (same as initial install)
       report('install_dependencies', 'Installing dependencies...', 65);
-      const npmResult = await this.execCommand(`cd ${addonServerDir} && npm install --production`);
+      const npmResult = await this.execCommand(`cd ${addonDirectory} && npm install --production`);
       if (npmResult.code !== 0) {
         return { success: false, error: `npm install failed: ${npmResult.stderr}` };
       }
       report('install_dependencies', 'Dependencies installed', 80);
 
-      // Step 5: Restart the service
+      // Step 4: Restart the service
       report('start_service', 'Starting addon service...', 85);
       await this.execSudo(`systemctl restart ${serviceName}`);
       report('start_service', 'Service restarted', 95);
@@ -3537,7 +3535,7 @@ WantedBy=multi-user.target
     # END_PARTY_SERVER_LOCATIONS`;
 
     // Read the current addon nginx config
-    const readResult = await this.execCommand(`cat ${addonNginxConf}`);
+    const readResult = await this.execCommand(`cat "${addonNginxConf}"`);
     if (readResult.code !== 0 || !readResult.stdout.trim()) {
       throw new Error(`Could not read addon nginx config at ${addonNginxConf}: ${readResult.stderr}`);
     }
@@ -3546,23 +3544,25 @@ WantedBy=multi-user.target
 
     // Remove any previously injected party blocks (idempotent)
     currentConf = currentConf.replace(
-      /\n\s*# BEGIN_PARTY_SERVER_LOCATIONS[\s\S]*?# END_PARTY_SERVER_LOCATIONS/g,
+      /\n[ \t]*# BEGIN_PARTY_SERVER_LOCATIONS[\s\S]*?# END_PARTY_SERVER_LOCATIONS/g,
       ''
     );
 
-    // Insert before the last closing `}` of the server block
+    // Insert before the last closing `}` of the last server block
     const lastBrace = currentConf.lastIndexOf('}');
     if (lastBrace === -1) {
       throw new Error(`Unexpected nginx config format in ${addonNginxConf} — no closing brace found`);
     }
     const updatedConf = currentConf.slice(0, lastBrace) + partyLocations + '\n}\n';
 
-    // Write via temp file + sudo mv
+    // Write via base64 — the only approach that reliably handles nginx variables ($host,
+    // $http_upgrade, regex chars, backslashes) over SSH exec without shell-escaping issues.
     const tmpConf = `/tmp/stremio-nginx-party-patch.${Date.now()}.conf`;
-    const escaped = updatedConf.replace(/'/g, `'\\''`);
-    await this.execCommand(`printf '%s' '${escaped}' > ${tmpConf}`);
-    await this.execSudo(`cp ${addonNginxConf} ${addonNginxConf}.party-bak`);
-    await this.execSudo(`mv ${tmpConf} ${addonNginxConf}`);
+    const encoded = Buffer.from(updatedConf).toString('base64');
+    // base64 string only contains [A-Za-z0-9+/=] — single-quoting is perfectly safe.
+    await this.execCommand(`printf '%s' '${encoded}' | base64 -d > "${tmpConf}"`);
+    await this.execSudo(`cp "${addonNginxConf}" "${addonNginxConf}.party-bak"`);
+    await this.execSudo(`mv "${tmpConf}" "${addonNginxConf}"`);
 
     // Clean up the now-obsolete separate party server config if it exists
     await this.execSudo(`rm -f /etc/nginx/sites-enabled/stremio-party-server`).catch(() => {});
@@ -3571,7 +3571,7 @@ WantedBy=multi-user.target
     const testResult = await this.execSudo('nginx -t');
     if (testResult.code !== 0) {
       // Restore backup
-      await this.execSudo(`mv ${addonNginxConf}.party-bak ${addonNginxConf}`);
+      await this.execSudo(`mv "${addonNginxConf}.party-bak" "${addonNginxConf}"`);
       throw new Error(`Nginx config test failed after injecting party blocks: ${testResult.stderr}`);
     }
 
@@ -3584,18 +3584,18 @@ WantedBy=multi-user.target
    */
   public async removePartyNginxLocations(): Promise<void> {
     const addonNginxConf = this.options.config.paths.nginxConfig;
-    const readResult = await this.execCommand(`cat ${addonNginxConf}`).catch(() => ({ code: 1, stdout: '', stderr: '' }));
+    const readResult = await this.execCommand(`cat "${addonNginxConf}"`).catch(() => ({ code: 1, stdout: '', stderr: '' }));
     if (readResult.code !== 0 || !readResult.stdout.trim()) return;
 
     const cleaned = readResult.stdout.replace(
-      /\n\s*# BEGIN_PARTY_SERVER_LOCATIONS[\s\S]*?# END_PARTY_SERVER_LOCATIONS/g,
+      /\n[ \t]*# BEGIN_PARTY_SERVER_LOCATIONS[\s\S]*?# END_PARTY_SERVER_LOCATIONS/g,
       ''
     );
 
     const tmpConf = `/tmp/stremio-nginx-party-remove.${Date.now()}.conf`;
-    const escaped = cleaned.replace(/'/g, `'\\''`);
-    await this.execCommand(`printf '%s' '${escaped}' > ${tmpConf}`);
-    await this.execSudo(`mv ${tmpConf} ${addonNginxConf}`);
+    const encoded = Buffer.from(cleaned).toString('base64');
+    await this.execCommand(`printf '%s' '${encoded}' | base64 -d > "${tmpConf}"`);
+    await this.execSudo(`mv "${tmpConf}" "${addonNginxConf}"`);
     await this.execSudo('nginx -t && systemctl reload nginx').catch(() => {});
   }
 
