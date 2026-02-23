@@ -297,7 +297,7 @@ function Dashboard() {
       )}
 
       {/* Party Server Card */}
-      {serviceStatus?.status === "active" && (config || selectedAddon) && (
+      {(config || selectedAddon) && (
         <Card title="Party Viewing Server">
           {partyStatus.installed ? (
             <Flex vertical gap={12}>
