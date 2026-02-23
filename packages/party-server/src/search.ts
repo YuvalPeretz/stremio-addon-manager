@@ -142,7 +142,22 @@ interface AddonStream {
 }
 
 /**
- * Resolve a stream URL from the addon server via Real-Debrid
+ * Try fetching streams from a single URL. Returns the streams array or null on failure.
+ */
+async function tryFetchStreams(streamUrl: string): Promise<AddonStream[] | null> {
+  try {
+    const response = await axios.get<{ streams?: AddonStream[] }>(streamUrl, { timeout: 60000 });
+    const streams = response.data?.streams ?? [];
+    return streams.length > 0 ? streams : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve a stream URL from the addon server via Real-Debrid.
+ * Falls back to localhost when the public addon URL is unreachable from within
+ * the server (hairpin NAT — server cannot route to its own public IP from LAN).
  */
 export async function resolveStream(
   addonUrl: string,
@@ -150,7 +165,8 @@ export async function resolveStream(
   type: "movie" | "series",
   imdbId: string,
   season?: number,
-  episode?: number
+  episode?: number,
+  localAddonPort?: number,
 ): Promise<ResolveStreamResponse | null> {
   const baseUrl = normalizeAddonUrl(addonUrl);
   const stremioId =
@@ -158,46 +174,45 @@ export async function resolveStream(
       ? `${imdbId}:${season}:${episode}`
       : imdbId;
 
-  const url = password
-    ? `${baseUrl}/${password}/stream/${type}/${stremioId}.json`
-    : `${baseUrl}/stream/${type}/${stremioId}.json`;
-  console.log(`Resolving stream: ${url}`);
+  const buildUrl = (base: string) =>
+    password
+      ? `${base}/${password}/stream/${type}/${stremioId}.json`
+      : `${base}/stream/${type}/${stremioId}.json`;
 
-  try {
-    const response = await axios.get(url, { timeout: 60000 });
-    const streams: AddonStream[] = response.data?.streams ?? [];
+  const publicUrl = buildUrl(baseUrl);
+  console.log(`Resolving stream: ${publicUrl}`);
 
-    if (streams.length === 0) {
-      console.log(`No streams found for ${stremioId}`);
-      return null;
-    }
+  // Try public URL first, then local fallback (handles hairpin NAT)
+  let streams = await tryFetchStreams(publicUrl);
+  let usedLocalhost = false;
+  if (!streams && localAddonPort) {
+    const localUrl = buildUrl(`http://localhost:${localAddonPort}`);
+    console.log(`Public URL failed, retrying via localhost: ${localUrl}`);
+    streams = await tryFetchStreams(localUrl);
+    usedLocalhost = streams !== null;
+  }
 
-    // Pick the first stream with a valid URL (already sorted by quality from addon)
-    const bestStream = streams.find((s) => s.url);
-    if (!bestStream?.url) {
-      console.log(`No streams with valid URLs for ${stremioId}`);
-      return null;
-    }
-
-    // Collect subtitles from all streams (they should all have the same subtitles)
-    const subtitles = bestStream.subtitles ?? [];
-
-    console.log(`✓ Resolved stream for ${stremioId} (${subtitles.length} subtitles)`);
-
-    return {
-      streamUrl: bestStream.url,
-      subtitles,
-      metadata: {
-        title: bestStream.title ?? bestStream.name ?? "Unknown",
-        year: 0,
-        poster: "",
-      },
-    };
-  } catch (error) {
-    console.error(
-      `Stream resolve error for ${stremioId}:`,
-      error instanceof Error ? error.message : error
-    );
+  if (!streams) {
+    console.log(`No streams found for ${stremioId}`);
     return null;
   }
+
+  const bestStream = streams.find((s) => s.url);
+  if (!bestStream?.url) {
+    console.log(`No streams with valid URLs for ${stremioId}`);
+    return null;
+  }
+
+  const subtitles = bestStream.subtitles ?? [];
+  console.log(`✓ Resolved stream for ${stremioId} via ${usedLocalhost ? 'localhost' : 'public URL'} (${subtitles.length} subtitles)`);
+
+  return {
+    streamUrl: bestStream.url,
+    subtitles,
+    metadata: {
+      title: bestStream.title ?? bestStream.name ?? "Unknown",
+      year: 0,
+      poster: "",
+    },
+  };
 }

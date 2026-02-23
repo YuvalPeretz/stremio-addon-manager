@@ -294,7 +294,8 @@ export function createServer(
         type,
         imdbId,
         seasonNum,
-        episode
+        episode,
+        config.addonPort,
       );
 
       if (!streamResult) {
