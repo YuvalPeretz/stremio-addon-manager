@@ -3112,8 +3112,11 @@ WantedBy=multi-user.target
       await this.setupPartyNginx(domain, partyPort, partyServiceName);
       reportProgress('setup_nginx', 'Nginx configured', 88);
 
-      // Step 9: Start (or restart) service
+      // Step 9: Start (or restart) service.
+      // Kill any orphan process holding the party port first (can happen after failed previous installs).
       reportProgress('start_service', 'Starting party-server...', 90);
+      await this.execSudo(`fuser -k ${partyPort}/tcp 2>/dev/null || true`);
+      await new Promise(resolve => setTimeout(resolve, 500));
       const startResult = await this.execSudo(`systemctl restart ${partyServiceName}`);
       if (startResult.code !== 0) {
         logger.warn('Party server systemctl restart returned non-zero', { stderr: startResult.stderr });
@@ -3482,19 +3485,24 @@ WantedBy=multi-user.target
   }
 
   /**
-   * Write the complete addon nginx config, optionally including /party location blocks.
+   * Patch the existing addon nginx config to add or remove /party location blocks.
+   *
+   * Uses a read-modify-write approach: reads the live config (which may be certbot-managed,
+   * hand-edited, or in any format), modifies only the party blocks in JavaScript, and
+   * writes back via SFTP. This preserves all certbot-managed lines, ssl_dhparam includes,
+   * custom directives, etc. — we never touch anything outside the party blocks.
    *
    * Safety guarantees:
-   *  1. SSL cert paths are read from the EXISTING working config — can never accidentally drop SSL.
-   *  2. SSL cert files are verified to exist on the server before writing anything.
-   *  3. For remote targets, the config is transferred via SFTP (NodeSSH putFile) — no shell escaping.
-   *  4. A backup of the original config is taken and auto-restored if nginx -t or post-reload check fails.
-   *  5. After reload, nginx service health is verified — if nginx goes down, the backup is restored.
+   *  1. The existing config is read and only the party blocks are changed.
+   *  2. The modified config is transferred via SFTP — no shell escaping of nginx vars.
+   *  3. A named backup (.pre-party-bak) is taken before swapping.
+   *  4. `nginx -t` failure → backup auto-restored, nginx reloaded with original.
+   *  5. Post-reload health check → if nginx goes down, backup restored and restarted.
    */
   private async writeAddonNginxConfig(
-    domain: string,
-    addonPort: number,
-    partyPort: number | null,   // null = no party blocks
+    _domain: string,
+    _addonPort: number,
+    partyPort: number | null,   // null = remove party blocks
   ): Promise<void> {
     const addonNginxConf = this.options.config.paths.nginxConfig;
     const serviceName = this.getServiceName();
@@ -3503,305 +3511,111 @@ WantedBy=multi-user.target
       throw new Error('Addon nginx config path is not set — re-install the addon first.');
     }
 
-    // Fail fast if the existing nginx config doesn't exist — addon isn't installed yet.
+    // ------------------------------------------------------------------
+    // Step 1: Read the existing working config.
+    // ------------------------------------------------------------------
     const confExists = await this.execCommand(`test -f "${addonNginxConf}" && echo "EXISTS" || echo "MISSING"`);
     if (!confExists.stdout.includes('EXISTS')) {
       throw new Error(`Addon nginx config not found at ${addonNginxConf} — install the addon first.`);
     }
 
+    const readResult = await this.execCommand(`cat "${addonNginxConf}"`);
+    if (readResult.code !== 0 || !readResult.stdout.trim()) {
+      throw new Error(`Could not read addon nginx config at ${addonNginxConf}: ${readResult.stderr}`);
+    }
+
     // ------------------------------------------------------------------
-    // Step 1: Extract SSL cert paths from the CURRENTLY WORKING config.
-    // This is the ground truth — we never call certbot or guess paths here.
+    // Step 2: In JavaScript, remove any old party blocks and optionally
+    // insert new ones. No shell involved — no escaping issues.
     // ------------------------------------------------------------------
-    const certLineResult = await this.execCommand(
-      `grep -E '^[[:space:]]*ssl_certificate[^_]' "${addonNginxConf}" 2>/dev/null | head -1 | awk '{print $2}' | tr -d ';'`
+    // Strip previous party blocks (between our markers, idempotent)
+    let config = readResult.stdout.replace(
+      /[ \t]*# BEGIN_PARTY_BLOCKS[\s\S]*?# END_PARTY_BLOCKS[ \t]*\n?/g,
+      ''
     );
-    const keyLineResult = await this.execCommand(
-      `grep -E '^[[:space:]]*ssl_certificate_key' "${addonNginxConf}" 2>/dev/null | head -1 | awk '{print $2}' | tr -d ';'`
-    );
-    const certificatePath = certLineResult.stdout.trim();
-    const privateKeyPath = keyLineResult.stdout.trim();
-    const hasSSL = !!(certificatePath && privateKeyPath);
 
-    // ------------------------------------------------------------------
-    // Step 2: If SSL is configured, verify the cert files actually exist.
-    // Must use sudo because /etc/letsencrypt/live/ is root-only (mode 700).
-    // If the sudo check is inconclusive, log a warning but don't abort —
-    // the cert paths came from the currently-working nginx config, so they
-    // almost certainly exist; nginx -t will catch any real problem later.
-    // ------------------------------------------------------------------
-    if (hasSSL) {
-      const certCheck = await this.execSudo(
-        `test -f "${certificatePath}" && test -f "${privateKeyPath}" && echo "EXISTS" || echo "MISSING"`
-      );
-      if (certCheck.stdout.includes('MISSING')) {
-        throw new Error(
-          `SSL cert files referenced in the nginx config do not exist on the server.\n` +
-          `  cert: ${certificatePath}\n  key:  ${privateKeyPath}\n` +
-          `Check that Let's Encrypt has issued certs for this domain.`
-        );
+    if (partyPort !== null) {
+      const partyBlockStr = [
+        '    # BEGIN_PARTY_BLOCKS',
+        '    # Party server - exact match (GET /party)',
+        `    location = /party {`,
+        `        proxy_pass http://localhost:${partyPort}/;`,
+        `        proxy_http_version 1.1;`,
+        `        proxy_set_header Host $host;`,
+        `        proxy_set_header X-Real-IP $remote_addr;`,
+        `        proxy_set_header X-Forwarded-Proto $scheme;`,
+        `        add_header Access-Control-Allow-Origin * always;`,
+        `        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;`,
+        `        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;`,
+        `        if ($request_method = OPTIONS) {`,
+        `            add_header Access-Control-Allow-Origin * always;`,
+        `            add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;`,
+        `            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;`,
+        `            add_header Content-Length 0;`,
+        `            return 204;`,
+        `        }`,
+        `    }`,
+        ``,
+        `    # Party server - API and static routes (/party/*)`,
+        `    location /party/ {`,
+        `        proxy_pass http://localhost:${partyPort}/;`,
+        `        proxy_http_version 1.1;`,
+        `        proxy_set_header Host $host;`,
+        `        proxy_set_header X-Real-IP $remote_addr;`,
+        `        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`,
+        `        proxy_set_header X-Forwarded-Proto $scheme;`,
+        `        proxy_read_timeout 300s;`,
+        `        proxy_connect_timeout 75s;`,
+        `        add_header Access-Control-Allow-Origin * always;`,
+        `        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;`,
+        `        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;`,
+        `        if ($request_method = OPTIONS) {`,
+        `            add_header Access-Control-Allow-Origin * always;`,
+        `            add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;`,
+        `            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;`,
+        `            add_header Content-Length 0;`,
+        `            return 204;`,
+        `        }`,
+        `    }`,
+        ``,
+        `    # Party server - WebSocket upgrade (/party/ws/:sessionId)`,
+        `    location /party/ws/ {`,
+        `        proxy_pass http://localhost:${partyPort}/ws/;`,
+        `        proxy_http_version 1.1;`,
+        `        proxy_set_header Upgrade $http_upgrade;`,
+        `        proxy_set_header Connection "upgrade";`,
+        `        proxy_set_header Host $host;`,
+        `        proxy_set_header X-Real-IP $remote_addr;`,
+        `        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`,
+        `        proxy_set_header X-Forwarded-Proto $scheme;`,
+        `        proxy_read_timeout 86400s;`,
+        `        proxy_send_timeout 86400s;`,
+        `    }`,
+        `    # END_PARTY_BLOCKS`,
+        '',
+      ].join('\n');
+
+      // Insert just before the first "listen 443" line (certbot places it near bottom of server block).
+      // Fallback: before the last closing "}" in the file.
+      // nginx picks longest-prefix / exact-match regardless of order, so placement is flexible.
+      const listenSslMatch = config.match(/(\n[ \t]*listen 443)/);
+      if (listenSslMatch?.index !== undefined) {
+        config =
+          config.slice(0, listenSslMatch.index) +
+          '\n' + partyBlockStr +
+          config.slice(listenSslMatch.index);
+      } else {
+        const lastBrace = config.lastIndexOf('\n}');
+        if (lastBrace !== -1) {
+          config = config.slice(0, lastBrace) + '\n' + partyBlockStr + config.slice(lastBrace);
+        } else {
+          config = config + '\n' + partyBlockStr;
+        }
       }
-      // If the check returned neither EXISTS nor MISSING (unexpected sudo output),
-      // log a warning and proceed — nginx -t is the real safety net.
-      if (!certCheck.stdout.includes('EXISTS')) {
-        logger.warn('Could not confirm SSL cert file existence (sudo check inconclusive) — proceeding; nginx -t will validate', {
-          certificatePath,
-          privateKeyPath,
-          output: certCheck.stdout.slice(0, 200),
-        });
-      }
-    }
-
-    // Party location blocks (only emitted when partyPort is provided)
-    const partyBlocks = partyPort === null ? '' : `
-    # Party server - exact match (GET /party)
-    location = /party {
-        proxy_pass http://localhost:${partyPort}/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        add_header Access-Control-Allow-Origin * always;
-        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
-        if ($request_method = OPTIONS) {
-            add_header Access-Control-Allow-Origin * always;
-            add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
-            add_header Content-Length 0;
-            return 204;
-        }
-    }
-
-    # Party server - API and static routes (/party/*)
-    location /party/ {
-        proxy_pass http://localhost:${partyPort}/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;
-        proxy_connect_timeout 75s;
-        add_header Access-Control-Allow-Origin * always;
-        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
-        if ($request_method = OPTIONS) {
-            add_header Access-Control-Allow-Origin * always;
-            add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
-            add_header Content-Length 0;
-            return 204;
-        }
-    }
-
-    # Party server - WebSocket upgrade (/party/ws/:sessionId)
-    location /party/ws/ {
-        proxy_pass http://localhost:${partyPort}/ws/;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 86400s;
-        proxy_send_timeout 86400s;
-    }
-`;
-
-    let nginxConfig: string;
-
-    if (hasSSL) {
-      nginxConfig = `
-# HTTP server - redirect all traffic to HTTPS
-server {
-    listen 80;
-    server_name ${domain};
-
-    location /.well-known/acme-challenge/ {
-        root /var/www/html;
-        try_files $uri =404;
-    }
-
-    location / {
-        return 301 https://$host$request_uri;
-    }
-}
-
-# HTTPS server
-server {
-    listen 443 ssl http2;
-    server_name ${domain};
-
-    ssl_certificate ${certificatePath};
-    ssl_certificate_key ${privateKeyPath};
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-    ssl_prefer_server_ciphers on;
-    ssl_session_cache shared:SSL:10m;
-    ssl_session_timeout 10m;
-${partyBlocks}
-    location = / {
-        proxy_pass http://localhost:${addonPort}/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_connect_timeout 5s;
-        proxy_read_timeout 10s;
-    }
-
-    location = /stats {
-        proxy_pass http://localhost:${addonPort}/stats;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_connect_timeout 5s;
-        proxy_read_timeout 10s;
-    }
-
-    location ~ ^/([^/]+)/manifest\\.json$ {
-        if ($request_method = OPTIONS) {
-            add_header Access-Control-Allow-Origin * always;
-            add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
-            add_header Access-Control-Max-Age 86400 always;
-            add_header Content-Length 0;
-            add_header Content-Type text/plain;
-            return 204;
-        }
-        proxy_pass http://localhost:${addonPort}/$1/manifest.json;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_connect_timeout 5s;
-        proxy_read_timeout 10s;
-    }
-
-    location ~ ^/([^/]+)/stream/(.+)$ {
-        if ($request_method = OPTIONS) {
-            add_header Access-Control-Allow-Origin * always;
-            add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
-            add_header Access-Control-Max-Age 86400 always;
-            add_header Content-Length 0;
-            add_header Content-Type text/plain;
-            return 204;
-        }
-        proxy_pass http://localhost:${addonPort}/$1/stream/$2;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_read_timeout 300s;
-        proxy_connect_timeout 75s;
-        proxy_send_timeout 300s;
-    }
-
-    location / {
-        proxy_pass http://localhost:${addonPort};
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_connect_timeout 5s;
-        proxy_read_timeout 10s;
-    }
-}
-`;
-    } else {
-      nginxConfig = `
-# HTTP server (no SSL configured)
-server {
-    listen 80;
-    server_name ${domain};
-
-    location /.well-known/acme-challenge/ {
-        root /var/www/html;
-        try_files $uri =404;
-    }
-${partyBlocks}
-    location = / {
-        proxy_pass http://localhost:${addonPort}/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_connect_timeout 5s;
-        proxy_read_timeout 10s;
-    }
-
-    location ~ ^/([^/]+)/manifest\\.json$ {
-        if ($request_method = OPTIONS) {
-            add_header Access-Control-Allow-Origin * always;
-            add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
-            add_header Content-Length 0;
-            return 204;
-        }
-        proxy_pass http://localhost:${addonPort}/$1/manifest.json;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host $host;
-    }
-
-    location ~ ^/([^/]+)/stream/(.+)$ {
-        if ($request_method = OPTIONS) {
-            add_header Access-Control-Allow-Origin * always;
-            add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
-            add_header Content-Length 0;
-            return 204;
-        }
-        proxy_pass http://localhost:${addonPort}/$1/stream/$2;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_read_timeout 300s;
-        proxy_connect_timeout 75s;
-    }
-
-    location / {
-        proxy_pass http://localhost:${addonPort};
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_connect_timeout 5s;
-        proxy_read_timeout 10s;
-    }
-}
-`;
     }
 
     // ------------------------------------------------------------------
-    // Step 3: Transfer the generated config to the server.
-    // For remote targets we use SFTP (NodeSSH putFile) — avoids all shell
-    // escaping issues with nginx variables ($host, $1, $http_upgrade, etc.).
-    // For local targets we write directly to a temp path.
+    // Step 3: Transfer modified config to the server via SFTP.
     // ------------------------------------------------------------------
     const fsP = await import('node:fs/promises');
     const osModule = await import('node:os');
@@ -3810,29 +3624,26 @@ ${partyBlocks}
 
     if (this.ssh) {
       const localTemp = path.join(osModule.tmpdir(), `stremio-nginx-${timestamp}.conf`);
-      await fsP.writeFile(localTemp, nginxConfig, 'utf-8');
+      await fsP.writeFile(localTemp, config, 'utf-8');
       try {
-        // SFTP transferFile: bypasses the SSH exec channel entirely — 100% reliable for binary/text content.
         await this.ssh.transferFile(localTemp, remoteTemp);
       } finally {
         await fsP.unlink(localTemp).catch(() => {});
       }
     } else {
-      await fsP.writeFile(remoteTemp, nginxConfig, 'utf-8');
+      await fsP.writeFile(remoteTemp, config, 'utf-8');
     }
 
-    // Verify the written file is non-empty (SFTP errors are silent otherwise)
     const sizeCheck = await this.execCommand(`test -s "${remoteTemp}" && echo "OK" || echo "EMPTY"`);
     if (!sizeCheck.stdout.includes('OK')) {
       throw new Error('Nginx config upload produced an empty file — aborting to protect existing config.');
     }
 
-    // If we're adding party blocks, verify they're in the uploaded file
     if (partyPort !== null) {
       const blockCheck = await this.execCommand(`grep -c 'location = /party' "${remoteTemp}" 2>/dev/null || echo "0"`);
       if ((parseInt(blockCheck.stdout.trim()) || 0) === 0) {
         await this.execCommand(`rm -f "${remoteTemp}"`).catch(() => {});
-        throw new Error('Party location block is missing from the uploaded nginx config.');
+        throw new Error('Party location block is missing from the modified nginx config.');
       }
     }
 
@@ -3848,7 +3659,7 @@ ${partyBlocks}
       throw new Error(`Failed to move nginx config into place: ${mvResult.stderr}`);
     }
 
-    // Ensure the symlink is intact
+    // Ensure the symlink in sites-enabled is intact
     await this.execSudo(`ln -sf "${addonNginxConf}" /etc/nginx/sites-enabled/${serviceName}`);
 
     // Remove any old separate party-server config that would conflict
@@ -3856,7 +3667,7 @@ ${partyBlocks}
 
     const testResult = await this.execSudo('nginx -t');
     if (testResult.code !== 0) {
-      logger.error('nginx -t failed after party config write — restoring backup', { stderr: testResult.stderr });
+      logger.error('nginx -t failed — restoring backup', { stderr: testResult.stderr });
       await this.execSudo(`cp "${backupPath}" "${addonNginxConf}"`);
       await this.execSudo('systemctl reload nginx').catch(() => {});
       throw new Error(`nginx -t failed — original config restored.\nError: ${testResult.stderr}`);
@@ -3865,25 +3676,18 @@ ${partyBlocks}
     await this.execSudo('systemctl reload nginx');
 
     // ------------------------------------------------------------------
-    // Step 5: Post-reload health check — if nginx went down after the reload
-    // (e.g. runtime issue not caught by nginx -t), restore the backup immediately.
+    // Step 5: Post-reload health check.
     // ------------------------------------------------------------------
     await new Promise(resolve => setTimeout(resolve, 1500));
     const nginxHealth = await this.execCommand('systemctl is-active nginx 2>&1');
     if (nginxHealth.stdout.trim() !== 'active') {
-      logger.error('Nginx is not active after reload — restoring backup config and restarting');
+      logger.error('Nginx not active after reload — restoring backup and restarting');
       await this.execSudo(`cp "${backupPath}" "${addonNginxConf}"`);
       await this.execSudo('systemctl restart nginx').catch(() => {});
       throw new Error('Nginx became inactive after reload — original config restored and nginx restarted.');
     }
 
-    logger.info('Addon nginx config written and verified', {
-      addonNginxConf,
-      domain,
-      addonPort,
-      partyPort,
-      hasSSL,
-    });
+    logger.info('Addon nginx config patched with party blocks', { addonNginxConf, partyPort });
   }
 
   /**
