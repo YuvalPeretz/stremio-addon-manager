@@ -3031,6 +3031,20 @@ echo url="https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}
       await this.copyBundledPackage(bundledPath, partyInstallDir, 'party-server');
       reportProgress('clone_repository', 'Party-server files copied', 35);
 
+      // Step 3b: Ensure FFmpeg is installed — required for AC3→AAC audio transcoding
+      // so Chrome can play Real-Debrid MKV streams.  This is a no-op if already installed.
+      reportProgress('install_dependencies', 'Checking FFmpeg for audio transcoding...', 37);
+      if (this.ssh) {
+        const ffmpegCheck = await this.execCommand('which ffmpeg');
+        if (ffmpegCheck.code !== 0) {
+          logger.info('FFmpeg not found, installing via apt-get...');
+          await this.execSudo('apt-get install -y ffmpeg');
+          logger.info('FFmpeg installed successfully');
+        } else {
+          logger.info('FFmpeg already installed at: ' + ffmpegCheck.stdout.trim());
+        }
+      }
+
       // Step 4: Install npm dependencies
       reportProgress('install_dependencies', 'Installing party-server dependencies...', 40);
       const packageJsonPath = this.ssh ? path.posix.join(partyInstallDir, 'package.json') : path.join(partyInstallDir, 'package.json');
