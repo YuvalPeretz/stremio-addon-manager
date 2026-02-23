@@ -22,11 +22,30 @@ import type {
 
 // Detect FFmpeg at startup — needed for AC3/DTS → AAC audio transcoding.
 // Chrome cannot decode AC3/Dolby audio natively; transcoding fixes this.
+// We try `which` first, then fall back to well-known install paths because
+// systemd services can run with a restricted PATH where `which` fails.
 let ffmpegBin: string | null = null;
-try {
-  ffmpegBin = execSync("which ffmpeg", { encoding: "utf8" }).trim();
+(function detectFfmpeg() {
+  // 1. Try `which`
+  try {
+    const found = execSync("which ffmpeg", { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }).trim();
+    if (found) { ffmpegBin = found; return; }
+  } catch { /* fall through */ }
+
+  // 2. Try known absolute paths
+  const candidates = ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/bin/ffmpeg", "/snap/bin/ffmpeg"];
+  for (const c of candidates) {
+    try {
+      execSync(`test -x "${c}"`, { stdio: "ignore" });
+      ffmpegBin = c;
+      return;
+    } catch { /* continue */ }
+  }
+})();
+
+if (ffmpegBin) {
   console.log(`[party] FFmpeg found at ${ffmpegBin} — audio transcoding ENABLED`);
-} catch {
+} else {
   console.log("[party] FFmpeg not found — audio transcoding DISABLED (AC3 streams will be silent in Chrome)");
 }
 
