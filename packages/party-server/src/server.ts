@@ -5,6 +5,8 @@
 import express, { type Request, type Response } from "express";
 import cors from "cors";
 import axios from "axios";
+import { execSync } from "child_process";
+import { spawn } from "child_process";
 import type { PartyConfig } from "./config.js";
 import type { SessionManager } from "./session-manager.js";
 import type { SyncEngine } from "./sync-engine.js";
@@ -17,6 +19,16 @@ import type {
   SessionContent,
   Subtitle,
 } from "./types.js";
+
+// Detect FFmpeg at startup — needed for AC3/DTS → AAC audio transcoding.
+// Chrome cannot decode AC3/Dolby audio natively; transcoding fixes this.
+let ffmpegBin: string | null = null;
+try {
+  ffmpegBin = execSync("which ffmpeg", { encoding: "utf8" }).trim();
+  console.log(`[party] FFmpeg found at ${ffmpegBin} — audio transcoding ENABLED`);
+} catch {
+  console.log("[party] FFmpeg not found — audio transcoding DISABLED (AC3 streams will be silent in Chrome)");
+}
 
 export function createServer(
   config: PartyConfig,
@@ -64,6 +76,57 @@ export function createServer(
     const urlParam = req.query.url as string | undefined;
     if (!urlParam) {
       res.status(400).json({ error: "url parameter required" });
+      return;
+    }
+
+    // ── Transcoding path (AC3/DTS → AAC) ─────────────────────────────────────
+    // When ?transcode=1 is set and FFmpeg is available, we pipe the upstream
+    // through FFmpeg: copy video as-is, re-encode audio to AAC (universally
+    // supported by Chrome).  ?start=N seeks FFmpeg to N seconds so the browser
+    // doesn't have to fetch the whole file from the beginning after a seek.
+    const wantTranscode = req.query.transcode === "1" && ffmpegBin !== null;
+    const startSec = Math.max(0, Number(req.query.start ?? 0) || 0);
+
+    if (wantTranscode && ffmpegBin) {
+      res.setHeader("Content-Type", "video/x-matroska");
+      res.status(200); // no byte-range support in transcoded mode
+
+      const args = [
+        "-hide_banner", "-loglevel", "error",
+        "-user_agent", "Mozilla/5.0 (compatible; StremioParty/1.0)",
+        // Fast keyframe seek BEFORE -i (avoids decoding leading frames)
+        ...(startSec > 0 ? ["-ss", String(startSec)] : []),
+        "-i", urlParam,
+        "-c:v", "copy",           // Copy video — no re-encode, no quality loss
+        "-c:a", "aac",            // Transcode audio → AAC (Chrome-compatible)
+        "-b:a", "192k",
+        // Shift output timestamps so video.currentTime ≈ movie position
+        ...(startSec > 0 ? ["-output_ts_offset", String(startSec)] : []),
+        "-f", "matroska",         // Streaming-friendly container
+        "pipe:1",
+      ];
+
+      const ff = spawn(ffmpegBin, args, { stdio: ["ignore", "pipe", "pipe"] });
+
+      ff.stderr.on("data", (d: Buffer) => {
+        const msg = d.toString().trim();
+        if (msg) console.error("[ffmpeg]", msg.substring(0, 120));
+      });
+
+      ff.stdout.pipe(res);
+
+      req.on("close", () => ff.kill("SIGKILL"));
+
+      ff.on("error", (err: Error) => {
+        console.error("[ffmpeg] spawn error:", err.message);
+        if (!res.headersSent) res.status(502).json({ error: "FFmpeg error" });
+        else res.end();
+      });
+
+      ff.on("exit", () => {
+        if (!res.writableEnded) res.end();
+      });
+
       return;
     }
 
@@ -467,6 +530,13 @@ export function createServer(
     return `${proto}://${host}${partyPrefix}/api/proxy?url=${encodeURIComponent(rawUrl)}`;
   }
 
+  /** Build a transcoded proxy URL: same as above but adds &transcode=1&start=0
+   *  so the proxy pipes through FFmpeg (audio → AAC).  Only used when FFmpeg
+   *  is available on the server. */
+  function buildTranscodeUrl(req: Request, rawUrl: string): string {
+    return buildProxyUrl(req, rawUrl) + "&transcode=1&start=0";
+  }
+
   /** Build a subtitle proxy URL — fetches the subtitle file server-side and
    *  converts SRT → WebVTT so the browser <track> element can display it. */
   function buildSubtitleUrl(req: Request, rawUrl: string): string {
@@ -540,8 +610,13 @@ export function createServer(
         subtitles = await fetchSubtitles(type, imdbId, seasonNum, episode);
       }
 
-      // Wrap the CDN URL in our proxy to fix CORS for the video stream
-      const proxiedUrl = buildProxyUrl(req, rawStreamUrl);
+      // Wrap the CDN URL in our proxy to fix CORS for the video stream.
+      // Use the transcoding proxy when FFmpeg is available so AC3/DTS audio
+      // (common in MKV files from Real-Debrid) is re-encoded to AAC which
+      // Chrome can actually play.
+      const proxiedUrl = ffmpegBin
+        ? buildTranscodeUrl(req, rawStreamUrl)
+        : buildProxyUrl(req, rawStreamUrl);
 
       // Also proxy every subtitle URL — external subtitle servers (e.g. sub.wyzie.ru)
       // don't set CORS headers, so <track> elements fail silently when the <video>
