@@ -113,7 +113,7 @@ export async function fetchSubtitles(
   const cacheKey = `subtitles_${id}`;
 
   // Check cache first
-  const cached = cacheManager.get(cacheKey);
+  const cached = cacheManager.getMetadata(cacheKey);
   if (cached) {
     console.log(`✓ Returning cached subtitles for ${imdbId}`);
     return cached as Subtitle[];
@@ -187,7 +187,7 @@ export async function fetchSubtitles(
     console.log(`✓ Found ${subtitles.length} subtitles for ${imdbId} (${subtitles.map(s => s.id).join(", ")})`);
 
     // Cache the results for 24 hours
-    cacheManager.set(cacheKey, subtitles);
+    cacheManager.setMetadata(cacheKey, subtitles);
 
     return subtitles;
   } catch (error) {
