@@ -472,8 +472,16 @@ export function createServer(
         subtitles = await fetchSubtitles(type, imdbId, seasonNum, episode);
       }
 
-      // Wrap the CDN URL in our proxy to fix CORS
+      // Wrap the CDN URL in our proxy to fix CORS for the video stream
       const proxiedUrl = buildProxyUrl(req, rawStreamUrl);
+
+      // Also proxy every subtitle URL — external subtitle servers (e.g. sub.wyzie.ru)
+      // don't set CORS headers, so <track> elements fail silently when the <video>
+      // has crossOrigin="anonymous".  Routing through our proxy adds the header.
+      const proxiedSubtitles = subtitles.map((sub) => ({
+        ...sub,
+        url: buildProxyUrl(req, sub.url),
+      }));
 
       const content: SessionContent = {
         type,
@@ -482,7 +490,7 @@ export function createServer(
         year: year ?? 0,
         poster: poster ?? "",
         streamUrl: proxiedUrl,
-        subtitles,
+        subtitles: proxiedSubtitles,
         duration: 0,
         season: seasonNum,
         episode,
