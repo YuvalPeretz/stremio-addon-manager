@@ -8,10 +8,12 @@ import {
   ConfigManager,
   SSHManager,
   UpdateManager,
+  InstallationManager,
   AddonRegistryManager,
   logger,
   type UpdateOptions,
   type RollbackOptions,
+  type InstallationProgress,
 } from '@stremio-addon-manager/core';
 import { getUpdateChecker } from './update-checker.js';
 
@@ -63,57 +65,31 @@ export function registerUpdateHandlers(): void {
   });
 
   /**
-   * Update a specific addon
+   * Update a specific addon — clean reinstall: removes old addon-server dir, copies fresh
+   * bundled files, npm installs, and restarts the service. Config and env vars are preserved.
    */
-  ipcMain.handle('update:addon', async (_event, addonId: string, options: UpdateOptions = {}) => {
+  ipcMain.handle('update:addon', async (_event, addonId: string, _options: UpdateOptions = {}) => {
     try {
-      logger.info('Starting addon update via IPC', { addonId, options });
+      logger.info('Starting clean addon reinstall via IPC', { addonId });
 
       const configManager = new ConfigManager(addonId);
       const config = await configManager.load();
 
-      let ssh: SSHManager | undefined;
-      if (config.installation.type === 'remote' && config.installation.target) {
-        ssh = new SSHManager({
-          host: config.installation.target.host || '',
-          port: config.installation.target.port || 22,
-          username: config.installation.target.username || '',
-          password: config.installation.target.password,
-          privateKeyPath: config.installation.target.privateKeyPath,
-        });
-        await ssh.connect();
-      }
-
-      const updateManager = new UpdateManager(ssh);
-      await updateManager.initialize();
-
-      // Set up progress callback to send to renderer
-      const progressCallback = (progress: any) => {
+      const progressCallback = (progress: InstallationProgress) => {
         const window = BrowserWindow.getAllWindows()[0];
         if (window && !window.isDestroyed()) {
           window.webContents.send('update:progress', { addonId, progress });
         }
       };
 
-      const result = await updateManager.updateAddon(addonId, {
-        ...options,
-        progressCallback,
-      });
+      const installManager = new InstallationManager({ config, progressCallback });
+      const result = await installManager.reinstallAddonServer(progressCallback);
 
-      if (ssh) {
-        await ssh.disconnect();
-      }
+      logger.info('Addon reinstall completed via IPC', { addonId, success: result.success });
 
-      logger.info('Addon update completed via IPC', { 
-        addonId, 
-        success: result.success,
-        previousVersion: result.previousVersion,
-        newVersion: result.newVersion,
-      });
-
-      return { success: true, data: result };
+      return { success: result.success, data: result, error: result.error };
     } catch (error) {
-      logger.error('Failed to update addon via IPC', error);
+      logger.error('Failed to reinstall addon via IPC', error);
       return { success: false, error: (error as Error).message };
     }
   });

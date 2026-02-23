@@ -3208,10 +3208,10 @@ WantedBy=multi-user.target
       await this.execSudo(`rm -f ${serviceFilePath}`).catch(() => {});
       await this.execSudo('systemctl daemon-reload').catch(() => {});
 
-      // Remove nginx config and reload nginx
+      // Remove party location blocks from addon nginx config + clean up old separate file
+      await this.removePartyNginxLocations().catch(() => {});
       await this.execSudo(`rm -f ${nginxEnabledPath}`).catch(() => {});
       await this.execSudo(`rm -f ${nginxConfPath}`).catch(() => {});
-      await this.execSudo('nginx -t && systemctl reload nginx').catch(() => {});
 
       // Remove install directory
       await this.execSudo(`rm -rf ${partyInstallDir}`).catch(() => {});
@@ -3221,6 +3221,106 @@ WantedBy=multi-user.target
     } catch (error) {
       const msg = (error as Error).message;
       logger.error('Party server uninstall failed', { error: msg });
+      return { success: false, error: msg };
+    }
+  }
+
+  /**
+   * Clean reinstall of the addon server binary only.
+   * Preserves all config and environment — only replaces the addon-server files.
+   * Steps: stop service → delete old addon-server dir → copy bundled → npm install → restart service.
+   */
+  public async reinstallAddonServer(
+    progressCallback?: (progress: InstallationProgress) => void
+  ): Promise<{ success: boolean; error?: string }> {
+    const config = this.options.config;
+    const addonDirectory = config.paths.addonDirectory;
+    const addonServerDir = this.ssh
+      ? path.posix.join(addonDirectory, 'addon-server')
+      : path.join(addonDirectory, 'addon-server');
+    const serviceName = config.serviceName || 'stremio-addon';
+
+    const report = (step: string, message: string, progress: number) => {
+      progressCallback?.({
+        step: step as InstallationStep,
+        status: StepStatus.IN_PROGRESS,
+        message,
+        progress,
+        timestamp: new Date(),
+      });
+    };
+
+    try {
+      if (config.installation.type === 'remote' && !this.ssh) {
+        report('connect', 'Connecting to remote server...', 5);
+        await this.connectToRemote();
+      }
+      report('connect', 'Connected', 10);
+
+      // Step 1: Stop the service
+      report('create_service', 'Stopping addon service...', 15);
+      await this.execSudo(`systemctl stop ${serviceName}`).catch(() => {});
+      report('create_service', 'Service stopped', 20);
+
+      // Step 2: Delete old addon-server directory
+      report('clone_repository', 'Removing old addon-server files...', 25);
+      await this.execSudo(`rm -rf ${addonServerDir}`).catch(() => {});
+      report('clone_repository', 'Old files removed', 30);
+
+      // Step 3: Copy fresh bundled addon-server
+      report('clone_repository', 'Copying new addon-server files...', 35);
+      const bundledPath = await this.getBundledAddonServerPath();
+      if (!bundledPath) {
+        return { success: false, error: 'Bundled addon-server not found. Run npm run build first.' };
+      }
+      await this.copyBundledAddonServer(bundledPath, addonDirectory);
+      report('clone_repository', 'New files copied', 60);
+
+      // Step 4: Install npm dependencies
+      report('install_dependencies', 'Installing dependencies...', 65);
+      const npmResult = await this.execCommand(`cd ${addonServerDir} && npm install --production`);
+      if (npmResult.code !== 0) {
+        return { success: false, error: `npm install failed: ${npmResult.stderr}` };
+      }
+      report('install_dependencies', 'Dependencies installed', 80);
+
+      // Step 5: Restart the service
+      report('start_service', 'Starting addon service...', 85);
+      await this.execSudo(`systemctl restart ${serviceName}`);
+      report('start_service', 'Service restarted', 95);
+
+      // Brief wait then verify
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      const statusResult = await this.execCommand(`systemctl is-active ${serviceName}`);
+      const isActive = statusResult.stdout.trim() === 'active';
+
+      if (!isActive) {
+        const logs = await this.execCommand(`journalctl -u ${serviceName} --no-pager -n 20`);
+        logger.warn('Service may not be running after reinstall', { logs: logs.stdout });
+        return { success: false, error: `Service failed to start after reinstall. Check logs: ${logs.stdout.slice(-500)}` };
+      }
+
+      progressCallback?.({
+        step: 'complete' as InstallationStep,
+        status: StepStatus.COMPLETED,
+        message: 'Addon reinstalled successfully!',
+        progress: 100,
+        timestamp: new Date(),
+      });
+
+      logger.info('Addon server reinstalled successfully', { serviceName, addonDirectory });
+      return { success: true };
+    } catch (error) {
+      const msg = (error as Error).message;
+      logger.error('Addon server reinstall failed', { error: msg });
+      progressCallback?.({
+        step: 'complete' as InstallationStep,
+        status: StepStatus.FAILED,
+        message: `Reinstall failed: ${msg}`,
+        progress: 0,
+        error: error as Error,
+        timestamp: new Date(),
+      });
       return { success: false, error: msg };
     }
   }
@@ -3373,35 +3473,35 @@ WantedBy=multi-user.target
   }
 
   /**
-   * Setup Nginx location block for party-server.
-   * Adds /party/* proxy rules to the existing domain nginx config (or creates a new one).
+   * Inject /party location blocks into the existing addon nginx config.
+   *
+   * A separate server block for the same domain+port is silently ignored by nginx
+   * (only one server block wins per hostname). Instead, we patch the addon's own
+   * nginx config file in-place using begin/end markers so the blocks live inside
+   * the correct server context.
    */
   private async setupPartyNginx(domain: string, partyPort: number, _partyServiceName: string): Promise<void> {
-    const nginxConfPath = `/etc/nginx/sites-available/stremio-party-server`;
-    const existingCert = await this.checkExistingCertificate(domain);
-    const hasSSL = existingCert && existingCert.isValid;
+    const addonNginxConf = this.options.config.paths.nginxConfig;
 
-    let nginxConfig: string;
-    if (hasSSL) {
-      nginxConfig = `
-# Party server - uses existing SSL certificate from addon
-server {
-    listen 443 ssl;
-    server_name ${domain};
-
-    ssl_certificate ${existingCert!.certificatePath};
-    ssl_certificate_key ${existingCert!.privateKeyPath};
-
-    # Party server availability check (exact match: GET /party)
+    const partyLocations = `
+    # BEGIN_PARTY_SERVER_LOCATIONS
     location = /party {
         proxy_pass http://localhost:${partyPort}/;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
         add_header Access-Control-Allow-Origin * always;
+        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Content-Type, Authorization, X-Admin-Token, X-Viewer-Token" always;
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin * always;
+            add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Content-Type, Authorization, X-Admin-Token, X-Viewer-Token" always;
+            add_header Content-Length 0;
+            return 204;
+        }
     }
-
-    # Party API endpoints
     location /party/ {
         proxy_pass http://localhost:${partyPort}/;
         proxy_http_version 1.1;
@@ -3411,21 +3511,17 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 300s;
         proxy_connect_timeout 75s;
-
-        # CORS
         add_header Access-Control-Allow-Origin * always;
         add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+        add_header Access-Control-Allow-Headers "Content-Type, Authorization, X-Admin-Token, X-Viewer-Token" always;
         if ($request_method = OPTIONS) {
             add_header Access-Control-Allow-Origin * always;
             add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+            add_header Access-Control-Allow-Headers "Content-Type, Authorization, X-Admin-Token, X-Viewer-Token" always;
             add_header Content-Length 0;
             return 204;
         }
     }
-
-    # Party WebSocket endpoint
     location /party/ws/ {
         proxy_pass http://localhost:${partyPort}/ws/;
         proxy_http_version 1.1;
@@ -3438,74 +3534,69 @@ server {
         proxy_read_timeout 86400s;
         proxy_send_timeout 86400s;
     }
-}
-`;
-    } else {
-      nginxConfig = `
-# Party server - HTTP only
-server {
-    listen 80;
-    server_name ${domain};
+    # END_PARTY_SERVER_LOCATIONS`;
 
-    # Party server availability check (exact match: GET /party)
-    location = /party {
-        proxy_pass http://localhost:${partyPort}/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        add_header Access-Control-Allow-Origin * always;
+    // Read the current addon nginx config
+    const readResult = await this.execCommand(`cat ${addonNginxConf}`);
+    if (readResult.code !== 0 || !readResult.stdout.trim()) {
+      throw new Error(`Could not read addon nginx config at ${addonNginxConf}: ${readResult.stderr}`);
     }
 
-    location /party/ {
-        proxy_pass http://localhost:${partyPort}/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;
+    let currentConf = readResult.stdout;
 
-        add_header Access-Control-Allow-Origin * always;
-        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
-        if ($request_method = OPTIONS) {
-            add_header Access-Control-Allow-Origin * always;
-            add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
-            add_header Content-Length 0;
-            return 204;
-        }
-    }
+    // Remove any previously injected party blocks (idempotent)
+    currentConf = currentConf.replace(
+      /\n\s*# BEGIN_PARTY_SERVER_LOCATIONS[\s\S]*?# END_PARTY_SERVER_LOCATIONS/g,
+      ''
+    );
 
-    location /party/ws/ {
-        proxy_pass http://localhost:${partyPort}/ws/;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_read_timeout 86400s;
-        proxy_send_timeout 86400s;
+    // Insert before the last closing `}` of the server block
+    const lastBrace = currentConf.lastIndexOf('}');
+    if (lastBrace === -1) {
+      throw new Error(`Unexpected nginx config format in ${addonNginxConf} — no closing brace found`);
     }
-}
-`;
-    }
+    const updatedConf = currentConf.slice(0, lastBrace) + partyLocations + '\n}\n';
 
-    const tmpConf = `/tmp/stremio-party-nginx.${Date.now()}.conf`;
-    await this.execCommand(`cat > ${tmpConf} << 'EOF'\n${nginxConfig}\nEOF`);
-    await this.execSudo(`mv ${tmpConf} ${nginxConfPath}`);
-    await this.execSudo(`ln -sf ${nginxConfPath} /etc/nginx/sites-enabled/stremio-party-server`);
+    // Write via temp file + sudo mv
+    const tmpConf = `/tmp/stremio-nginx-party-patch.${Date.now()}.conf`;
+    const escaped = updatedConf.replace(/'/g, `'\\''`);
+    await this.execCommand(`printf '%s' '${escaped}' > ${tmpConf}`);
+    await this.execSudo(`cp ${addonNginxConf} ${addonNginxConf}.party-bak`);
+    await this.execSudo(`mv ${tmpConf} ${addonNginxConf}`);
+
+    // Clean up the now-obsolete separate party server config if it exists
+    await this.execSudo(`rm -f /etc/nginx/sites-enabled/stremio-party-server`).catch(() => {});
+    await this.execSudo(`rm -f /etc/nginx/sites-available/stremio-party-server`).catch(() => {});
 
     const testResult = await this.execSudo('nginx -t');
     if (testResult.code !== 0) {
-      // Roll back on failure
-      await this.execSudo(`rm -f /etc/nginx/sites-enabled/stremio-party-server`);
-      await this.execSudo(`rm -f ${nginxConfPath}`);
-      throw new Error(`Nginx configuration test failed after adding party-server: ${testResult.stderr}`);
+      // Restore backup
+      await this.execSudo(`mv ${addonNginxConf}.party-bak ${addonNginxConf}`);
+      throw new Error(`Nginx config test failed after injecting party blocks: ${testResult.stderr}`);
     }
 
     await this.execSudo('systemctl reload nginx');
-    logger.info('Party-server Nginx configuration applied');
+    logger.info('Party-server nginx locations injected into addon config', { addonNginxConf, domain, partyPort });
+  }
+
+  /**
+   * Remove /party location blocks from the addon nginx config (called during uninstall).
+   */
+  public async removePartyNginxLocations(): Promise<void> {
+    const addonNginxConf = this.options.config.paths.nginxConfig;
+    const readResult = await this.execCommand(`cat ${addonNginxConf}`).catch(() => ({ code: 1, stdout: '', stderr: '' }));
+    if (readResult.code !== 0 || !readResult.stdout.trim()) return;
+
+    const cleaned = readResult.stdout.replace(
+      /\n\s*# BEGIN_PARTY_SERVER_LOCATIONS[\s\S]*?# END_PARTY_SERVER_LOCATIONS/g,
+      ''
+    );
+
+    const tmpConf = `/tmp/stremio-nginx-party-remove.${Date.now()}.conf`;
+    const escaped = cleaned.replace(/'/g, `'\\''`);
+    await this.execCommand(`printf '%s' '${escaped}' > ${tmpConf}`);
+    await this.execSudo(`mv ${tmpConf} ${addonNginxConf}`);
+    await this.execSudo('nginx -t && systemctl reload nginx').catch(() => {});
   }
 
   /**
