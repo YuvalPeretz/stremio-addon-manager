@@ -155,6 +155,42 @@ async function tryFetchStreams(streamUrl: string): Promise<AddonStream[] | null>
 }
 
 /**
+ * Fetch ALL available streams for content — returns the raw list so the host
+ * can pick the desired quality/source. Falls back to localhost for hairpin NAT.
+ */
+export async function getAvailableStreams(
+  addonUrl: string,
+  password: string,
+  type: "movie" | "series",
+  imdbId: string,
+  season?: number,
+  episode?: number,
+  localAddonPort?: number,
+): Promise<Array<{ url: string; name?: string; title?: string }>> {
+  const baseUrl = normalizeAddonUrl(addonUrl);
+  const stremioId =
+    type === "series" && season !== undefined && episode !== undefined
+      ? `${imdbId}:${season}:${episode}`
+      : imdbId;
+
+  const buildUrl = (base: string) =>
+    password
+      ? `${base}/${password}/stream/${type}/${stremioId}.json`
+      : `${base}/stream/${type}/${stremioId}.json`;
+
+  let streams = await tryFetchStreams(buildUrl(baseUrl));
+  if (!streams && localAddonPort) {
+    streams = await tryFetchStreams(buildUrl(`http://localhost:${localAddonPort}`));
+  }
+
+  if (!streams) return [];
+
+  return streams
+    .filter((s) => !!s.url)
+    .map((s) => ({ url: s.url!, name: s.name, title: s.title }));
+}
+
+/**
  * Resolve a stream URL from the addon server via Real-Debrid.
  * Falls back to localhost when the public addon URL is unreachable from within
  * the server (hairpin NAT — server cannot route to its own public IP from LAN).

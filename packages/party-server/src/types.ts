@@ -187,6 +187,12 @@ export interface SeasonInfo {
   episodes: EpisodeInfo[];
 }
 
+export interface StreamOption {
+  url: string;
+  name?: string;
+  title?: string;
+}
+
 export interface ResolveStreamRequest {
   type: "movie" | "series";
   imdbId: string;
@@ -196,6 +202,8 @@ export interface ResolveStreamRequest {
   season?: number;
   episode?: number;
   episodeTitle?: string;
+  /** If provided, skip auto-selection and use this specific stream URL */
+  streamUrl?: string;
 }
 
 export interface ResolveStreamResponse {

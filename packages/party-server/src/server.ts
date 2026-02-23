@@ -8,12 +8,13 @@ import type { PartyConfig } from "./config.js";
 import type { SessionManager } from "./session-manager.js";
 import type { SyncEngine } from "./sync-engine.js";
 import { validateAddon } from "./auth.js";
-import { searchContent, getSeriesEpisodes, resolveStream } from "./search.js";
+import { searchContent, getSeriesEpisodes, resolveStream, getAvailableStreams } from "./search.js";
 import { fetchSubtitles } from "./subtitle-proxy.js";
 import type {
   CreateSessionRequest,
   ResolveStreamRequest,
   SessionContent,
+  Subtitle,
 } from "./types.js";
 
 export function createServer(
@@ -36,6 +37,71 @@ export function createServer(
 
   app.get("/", (_req: Request, res: Response) => {
     res.json({ status: "on" });
+  });
+
+  // ─── Video Proxy ──────────────────────────────────────────
+  // Real-Debrid (and similar CDNs) don't set CORS headers, so the browser
+  // cannot play those URLs directly from addon-party.web.app.
+  // This endpoint proxies the video bytes server-side and adds CORS headers.
+
+  app.options("/api/proxy", (_req: Request, res: Response) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Range");
+    res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges");
+    res.status(204).send();
+  });
+
+  app.get("/api/proxy", async (req: Request, res: Response) => {
+    const urlParam = req.query.url as string | undefined;
+    if (!urlParam) {
+      res.status(400).json({ error: "url parameter required" });
+      return;
+    }
+
+    try {
+      const targetUrl = decodeURIComponent(urlParam);
+      const range = req.headers.range;
+
+      const upstream = await import("axios").then((m) =>
+        m.default.get(targetUrl, {
+          responseType: "stream",
+          headers: {
+            ...(range ? { Range: range } : {}),
+            "User-Agent": "Mozilla/5.0 (compatible; StremioParty/1.0)",
+          },
+          timeout: 15000,
+          maxRedirects: 10,
+        })
+      );
+
+      res.status(upstream.status);
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges");
+
+      const forwardHeaders = [
+        "content-type",
+        "content-length",
+        "content-range",
+        "accept-ranges",
+        "cache-control",
+      ];
+      for (const header of forwardHeaders) {
+        const value = upstream.headers[header];
+        if (value) res.setHeader(header, value as string);
+      }
+
+      // Pipe upstream bytes to client; destroy upstream on client disconnect
+      (upstream.data as NodeJS.ReadableStream).pipe(res);
+      req.on("close", () => {
+        (upstream.data as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
+      });
+    } catch (error) {
+      if (!res.headersSent) {
+        console.error("Proxy error:", error instanceof Error ? error.message : error);
+        res.status(502).json({ error: "Failed to proxy stream" });
+      }
+    }
   });
 
   app.get("/health", (_req: Request, res: Response) => {
@@ -262,7 +328,61 @@ export function createServer(
     }
   });
 
+  // ─── Stream Listing (host picks before committing) ───────
+
+  app.get("/api/sessions/:id/streams", async (req: Request, res: Response) => {
+    try {
+      const adminToken = req.headers["x-admin-token"] as string;
+      const session = sessionManager.getSession(req.params.id);
+
+      if (!session) {
+        res.status(404).json({ error: "Session not found" });
+        return;
+      }
+
+      if (session.adminToken !== adminToken) {
+        res.status(403).json({ error: "Only the host can list streams" });
+        return;
+      }
+
+      const type = req.query.type as "movie" | "series";
+      const imdbId = req.query.imdbId as string;
+      const season = req.query.season ? parseInt(req.query.season as string, 10) : undefined;
+      const episode = req.query.episode ? parseInt(req.query.episode as string, 10) : undefined;
+
+      if (!type || !imdbId) {
+        res.status(400).json({ error: "type and imdbId are required" });
+        return;
+      }
+
+      const streams = await getAvailableStreams(
+        session.addonUrl,
+        session.addonPassword,
+        type,
+        imdbId,
+        season,
+        episode,
+        config.addonPort,
+      );
+
+      res.json({ streams });
+    } catch (error) {
+      console.error("Streams error:", error);
+      res.status(500).json({ error: "Failed to list streams" });
+    }
+  });
+
   // ─── Stream Resolution ───────────────────────────────────
+
+  /** Build a proxy URL so the browser fetches video bytes through this server
+   *  (bypasses CDN CORS restrictions like Real-Debrid). */
+  function buildProxyUrl(req: Request, rawUrl: string): string {
+    const proto = (req.get("x-forwarded-proto") as string | undefined) ?? req.protocol;
+    const host = req.get("host") ?? `localhost:${config.port}`;
+    // When behind nginx (x-forwarded-proto is set), party server is at /party/
+    const partyPrefix = req.get("x-forwarded-proto") ? "/party" : "";
+    return `${proto}://${host}${partyPrefix}/api/proxy?url=${encodeURIComponent(rawUrl)}`;
+  }
 
   app.post("/api/sessions/:id/resolve", async (req: Request, res: Response) => {
     try {
@@ -279,44 +399,65 @@ export function createServer(
         return;
       }
 
-      const { type, imdbId, title, year, poster, season: seasonNum, episode, episodeTitle } =
-        req.body as ResolveStreamRequest;
+      const {
+        type,
+        imdbId,
+        title,
+        year,
+        poster,
+        season: seasonNum,
+        episode,
+        episodeTitle,
+        streamUrl: pickedStreamUrl,
+      } = req.body as ResolveStreamRequest;
 
       if (!type || !imdbId) {
         res.status(400).json({ error: "type and imdbId are required" });
         return;
       }
 
-      // Resolve stream from addon server
-      const streamResult = await resolveStream(
-        session.addonUrl,
-        session.addonPassword,
-        type,
-        imdbId,
-        seasonNum,
-        episode,
-        config.addonPort,
-      );
+      let rawStreamUrl: string;
+      let subtitles: Subtitle[] = [];
 
-      if (!streamResult) {
-        res.status(404).json({ error: "No streams available for this content" });
-        return;
+      if (pickedStreamUrl) {
+        // Host pre-selected a specific stream from the picker
+        rawStreamUrl = pickedStreamUrl;
+      } else {
+        // Auto-select the first available stream
+        const streamResult = await resolveStream(
+          session.addonUrl,
+          session.addonPassword,
+          type,
+          imdbId,
+          seasonNum,
+          episode,
+          config.addonPort,
+        );
+
+        if (!streamResult) {
+          res.status(404).json({ error: "No streams available for this content" });
+          return;
+        }
+
+        rawStreamUrl = streamResult.streamUrl;
+        subtitles = streamResult.subtitles;
       }
 
-      // Fetch subtitles directly (in case addon doesn't return them)
-      let subtitles = streamResult.subtitles;
+      // Fetch subtitles if none were returned by the addon
       if (subtitles.length === 0) {
         subtitles = await fetchSubtitles(type, imdbId, seasonNum, episode);
       }
 
-      // Set session content
+      // Wrap the CDN URL in our proxy to fix CORS
+      const proxiedUrl = buildProxyUrl(req, rawStreamUrl);
+
       const content: SessionContent = {
         type,
         imdbId,
-        title: title || streamResult.metadata.title,
-        year: year || streamResult.metadata.year,
-        poster: poster || streamResult.metadata.poster,
-        streamUrl: streamResult.streamUrl,
+        title: title ?? "",
+        year: year ?? 0,
+        poster: poster ?? "",
+        streamUrl: proxiedUrl,
         subtitles,
         duration: 0,
         season: seasonNum,
@@ -327,12 +468,11 @@ export function createServer(
 
       sessionManager.setContent(session.id, content);
 
-      // Broadcast to all connected viewers
       const publicInfo = sessionManager.toPublicInfo(session);
       syncEngine.notifyContentChanged(session.id, publicInfo);
 
       res.json({
-        streamUrl: streamResult.streamUrl,
+        streamUrl: proxiedUrl,
         subtitles,
         metadata: {
           title: content.title,
