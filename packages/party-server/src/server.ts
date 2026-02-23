@@ -87,6 +87,14 @@ export function createServer(
 
       res.status(upstream.status);
 
+      // Log content-type so we can diagnose unsupported audio codec issues
+      // (e.g. MKV with AC3/DTS audio, which Chrome cannot decode natively).
+      const ct = upstream.headers["content-type"] as string | undefined;
+      const ext = targetUrl.split("?")[0].split(".").pop()?.toLowerCase();
+      if (!range || range === "bytes=0-") {
+        console.log(`[proxy] ${upstream.status} content-type=${ct ?? "?"} ext=${ext ?? "?"} url=${targetUrl.substring(0, 80)}...`);
+      }
+
       const forwardHeaders = [
         "content-type",
         "content-length",
