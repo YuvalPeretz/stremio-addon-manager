@@ -61,7 +61,10 @@ export function createServer(
     }
 
     try {
-      const targetUrl = decodeURIComponent(urlParam);
+      // req.query.url is already URL-decoded by Express's query parser.
+      // Do NOT call decodeURIComponent again — double-decoding turns %20 into
+      // literal spaces, making the URL invalid (axios throws → Nginx 502).
+      const targetUrl = urlParam;
       const range = req.headers.range;
 
       const upstream = await axios.get(targetUrl, {
@@ -90,10 +93,24 @@ export function createServer(
         if (value) res.setHeader(header, value as string);
       }
 
-      // Pipe upstream bytes to client; destroy upstream on client disconnect
-      (upstream.data as NodeJS.ReadableStream).pipe(res);
+      const stream = upstream.data as NodeJS.ReadableStream;
+
+      // If the upstream stream errors after we've already started sending headers,
+      // we can't send a new HTTP response — just destroy the socket.
+      stream.on("error", (err: Error) => {
+        console.error("Upstream stream error:", err.message);
+        if (!res.headersSent) {
+          res.status(502).json({ error: "Stream error" });
+        } else {
+          res.destroy();
+        }
+      });
+
+      stream.pipe(res);
+
+      // Stop fetching from Real-Debrid if the client disconnects
       req.on("close", () => {
-        (upstream.data as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
+        (stream as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
       });
     } catch (error) {
       if (!res.headersSent) {
