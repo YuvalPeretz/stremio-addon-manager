@@ -283,6 +283,7 @@ export class SessionManager {
       title: content.title,
       year: content.year,
       poster: content.poster,
+      streamUrl: content.streamUrl,
       subtitles: content.subtitles,
       duration: content.duration,
       season: content.season,

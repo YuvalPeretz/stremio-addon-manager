@@ -76,6 +76,8 @@ export interface SessionContentPublic {
   title: string;
   year: number;
   poster: string;
+  /** Proxied stream URL — shared with all viewers so everyone can play the same content */
+  streamUrl: string;
   subtitles: Subtitle[];
   duration: number;
   season?: number;
