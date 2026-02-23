@@ -6,7 +6,7 @@
 import { useEffect, useState } from "react";
 import { useAtom } from "jotai";
 import { Card, Flex, Typography, Button, Tag, Spin, Alert, Modal, Progress, message } from "antd";
-import { FiPlay, FiPause, FiRotateCw, FiDownload, FiSettings } from "react-icons/fi";
+import { FiPlay, FiPause, FiRotateCw, FiDownload, FiSettings, FiTrash2 } from "react-icons/fi";
 import { useNavigate } from "react-router-dom";
 import { configAtom, configExistsAtom } from "../../atoms/configAtoms";
 import { serviceStatusAtom, serviceLoadingAtom } from "../../atoms/serviceAtoms";
@@ -33,6 +33,7 @@ function Dashboard() {
   const [migrationModalVisible, setMigrationModalVisible] = useState(false);
   const [partyStatus, setPartyStatus] = useState<PartyStatus>({ installed: false, active: false });
   const [partyInstalling, setPartyInstalling] = useState(false);
+  const [partyRemoving, setPartyRemoving] = useState(false);
   const [partyProgress, setPartyProgress] = useState(0);
   const [partyProgressMsg, setPartyProgressMsg] = useState("");
 
@@ -158,6 +159,29 @@ function Dashboard() {
       setPartyInstalling(false);
       setPartyProgress(0);
       setPartyProgressMsg("");
+      loadPartyStatus();
+    }
+  }
+
+  async function handleRemoveParty() {
+    const confirmed = window.confirm(
+      "Are you sure you want to remove the party server? This will stop the service, delete all party server files, and remove the nginx configuration."
+    );
+    if (!confirmed) return;
+
+    setPartyRemoving(true);
+    try {
+      const result = await window.electron.party.uninstall(selectedAddonId || undefined);
+      if (result.success) {
+        message.success("Party server removed successfully");
+      } else {
+        message.error(result.error || "Failed to remove party server");
+      }
+    } catch (error) {
+      message.error("Failed to remove party server");
+      console.error(error);
+    } finally {
+      setPartyRemoving(false);
       loadPartyStatus();
     }
   }
@@ -317,9 +341,20 @@ function Dashboard() {
                 <Text>Party URL</Text>
                 <Text copyable>{`https://${config?.addon?.domain || selectedAddon?.domain}/party`}</Text>
               </Flex>
-              <Button icon={<FiRotateCw />} onClick={handleInstallParty}>
-                Update Party Server
-              </Button>
+              <Flex gap={8}>
+                <Button icon={<FiRotateCw />} onClick={handleInstallParty} disabled={partyRemoving}>
+                  Update
+                </Button>
+                <Button
+                  icon={<FiTrash2 />}
+                  danger
+                  onClick={handleRemoveParty}
+                  loading={partyRemoving}
+                  disabled={partyInstalling}
+                >
+                  Remove
+                </Button>
+              </Flex>
             </Flex>
           ) : partyInstalling ? (
             <Flex vertical gap={12}>

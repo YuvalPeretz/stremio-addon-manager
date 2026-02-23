@@ -3186,6 +3186,46 @@ WantedBy=multi-user.target
   }
 
   /**
+   * Completely remove the party server: stop + disable service, delete files, remove nginx config.
+   */
+  public async uninstallPartyServer(): Promise<{ success: boolean; error?: string }> {
+    const partyServiceName = 'stremio-party-server';
+    const partyInstallDir = '/opt/stremio-party-server';
+    const nginxConfPath = '/etc/nginx/sites-available/stremio-party-server';
+    const nginxEnabledPath = '/etc/nginx/sites-enabled/stremio-party-server';
+    const serviceFilePath = `/etc/systemd/system/${partyServiceName}.service`;
+
+    try {
+      if (this.options.config.installation.type === 'remote' && !this.ssh) {
+        await this.connectToRemote();
+      }
+
+      // Stop and disable the service (ignore errors if not installed)
+      await this.execSudo(`systemctl stop ${partyServiceName}`).catch(() => {});
+      await this.execSudo(`systemctl disable ${partyServiceName}`).catch(() => {});
+
+      // Remove service file and reload systemd
+      await this.execSudo(`rm -f ${serviceFilePath}`).catch(() => {});
+      await this.execSudo('systemctl daemon-reload').catch(() => {});
+
+      // Remove nginx config and reload nginx
+      await this.execSudo(`rm -f ${nginxEnabledPath}`).catch(() => {});
+      await this.execSudo(`rm -f ${nginxConfPath}`).catch(() => {});
+      await this.execSudo('nginx -t && systemctl reload nginx').catch(() => {});
+
+      // Remove install directory
+      await this.execSudo(`rm -rf ${partyInstallDir}`).catch(() => {});
+
+      logger.info('Party server uninstalled successfully');
+      return { success: true };
+    } catch (error) {
+      const msg = (error as Error).message;
+      logger.error('Party server uninstall failed', { error: msg });
+      return { success: false, error: msg };
+    }
+  }
+
+  /**
    * Get path to bundled party-server (mirrors getBundledAddonServerPath pattern)
    */
   private async getBundledPartyServerPath(): Promise<string | null> {

@@ -1349,6 +1349,24 @@ function setupIPC() {
     }
   });
 
+  ipcMain.handle("party:uninstall", async (_event, addonId?: string) => {
+    try {
+      const configManager = new ConfigManager(addonId);
+      const config = await configManager.load();
+
+      if (!config) {
+        return { success: false, error: "No addon configuration found." };
+      }
+
+      const installManager = new InstallationManager({ config });
+      const result = await installManager.uninstallPartyServer();
+      return { success: result.success, error: result.error };
+    } catch (error) {
+      logger.error("Party server uninstall failed", error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
   logger.info("IPC handlers registered");
 }
 

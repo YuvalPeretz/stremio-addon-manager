@@ -25,6 +25,7 @@ export interface ElectronAPI {
   party: {
     install: (options: { addonId?: string; port?: number; addonUrl: string }) => Promise<{ success: boolean; data?: { success: boolean; partyUrl?: string; error?: string }; error?: string }>;
     status: (addonId?: string) => Promise<{ success: boolean; data?: { installed: boolean; active: boolean; port?: number }; error?: string }>;
+    uninstall: (addonId?: string) => Promise<{ success: boolean; error?: string }>;
     onProgress: (callback: (progress: unknown) => void) => void;
     removeProgressListener: () => void;
   };
