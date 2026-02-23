@@ -6,7 +6,7 @@
 import { useEffect, useState } from "react";
 import { useAtom } from "jotai";
 import { Card, Flex, Typography, Button, Tag, Spin, Alert, Modal, Progress, message } from "antd";
-import { FiPlay, FiPause, FiRotateCw, FiDownload, FiSettings, FiTrash2 } from "react-icons/fi";
+import { FiPlay, FiPause, FiRotateCw, FiDownload, FiSettings, FiTrash2, FiActivity } from "react-icons/fi";
 import { useNavigate } from "react-router-dom";
 import { configAtom, configExistsAtom } from "../../atoms/configAtoms";
 import { serviceStatusAtom, serviceLoadingAtom } from "../../atoms/serviceAtoms";
@@ -36,6 +36,8 @@ function Dashboard() {
   const [partyRemoving, setPartyRemoving] = useState(false);
   const [partyProgress, setPartyProgress] = useState(0);
   const [partyProgressMsg, setPartyProgressMsg] = useState("");
+  const [partyDiagnosing, setPartyDiagnosing] = useState(false);
+  const [partyDiagnosisResult, setPartyDiagnosisResult] = useState<string | null>(null);
 
   useEffect(() => {
     checkMigration();
@@ -183,6 +185,35 @@ function Dashboard() {
     } finally {
       setPartyRemoving(false);
       loadPartyStatus();
+    }
+  }
+
+  async function handleDiagnoseParty() {
+    setPartyDiagnosing(true);
+    try {
+      const result = await window.electron.party.diagnose(selectedAddonId || undefined);
+      if (result.success && result.data) {
+        const d = result.data;
+        const text = [
+          `Nginx config path: ${d.nginxConfigPath}`,
+          `Party blocks injected: ${d.nginxHasPartyBlocks ? "YES ✓" : "NO ✗ — nginx config was NOT updated"}`,
+          `Party service status: ${d.serviceStatus}`,
+          `Port reachable (localhost:7777): ${d.portReachable ? "YES ✓" : "NO ✗"}`,
+          "",
+          "=== Last 60 lines of nginx config ===",
+          d.nginxConfigSnippet,
+          "",
+          "=== Party service logs ===",
+          d.serviceLogs,
+        ].join("\n");
+        setPartyDiagnosisResult(text);
+      } else {
+        setPartyDiagnosisResult(`Diagnosis failed: ${result.error}`);
+      }
+    } catch (err) {
+      setPartyDiagnosisResult(`Error: ${(err as Error).message}`);
+    } finally {
+      setPartyDiagnosing(false);
     }
   }
 
@@ -341,16 +372,24 @@ function Dashboard() {
                 <Text>Party URL</Text>
                 <Text copyable>{`https://${config?.addon?.domain || selectedAddon?.domain}/party`}</Text>
               </Flex>
-              <Flex gap={8}>
-                <Button icon={<FiRotateCw />} onClick={handleInstallParty} disabled={partyRemoving}>
+              <Flex gap={8} wrap="wrap">
+                <Button icon={<FiRotateCw />} onClick={handleInstallParty} disabled={partyRemoving || partyDiagnosing}>
                   Update
+                </Button>
+                <Button
+                  icon={<FiActivity />}
+                  onClick={handleDiagnoseParty}
+                  loading={partyDiagnosing}
+                  disabled={partyInstalling || partyRemoving}
+                >
+                  Diagnose
                 </Button>
                 <Button
                   icon={<FiTrash2 />}
                   danger
                   onClick={handleRemoveParty}
                   loading={partyRemoving}
-                  disabled={partyInstalling}
+                  disabled={partyInstalling || partyDiagnosing}
                 >
                   Remove
                 </Button>
@@ -449,6 +488,21 @@ function Dashboard() {
           showIcon
           style={{ marginBottom: 16 }}
         />
+      </Modal>
+
+      {/* Party Diagnosis Modal */}
+      <Modal
+        title="Party Server Diagnosis"
+        open={partyDiagnosisResult !== null}
+        onOk={() => setPartyDiagnosisResult(null)}
+        onCancel={() => setPartyDiagnosisResult(null)}
+        okText="Close"
+        cancelButtonProps={{ style: { display: "none" } }}
+        width={800}
+      >
+        <pre style={{ maxHeight: 500, overflow: "auto", fontSize: 12, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+          {partyDiagnosisResult}
+        </pre>
       </Modal>
     </Flex>
   );

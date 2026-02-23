@@ -3116,17 +3116,28 @@ WantedBy=multi-user.target
       reportProgress('start_service', 'Starting party-server...', 90);
       const startResult = await this.execSudo(`systemctl restart ${partyServiceName}`);
       if (startResult.code !== 0) {
-        logger.warn('Party server start returned non-zero', { stderr: startResult.stderr });
+        logger.warn('Party server systemctl restart returned non-zero', { stderr: startResult.stderr });
       }
 
-      // Brief wait then verify
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      // Wait for the process to initialise, then verify it is running
+      await new Promise(resolve => setTimeout(resolve, 4000));
       const statusResult = await this.execCommand(`systemctl is-active ${partyServiceName}`);
       const isActive = statusResult.stdout.trim() === 'active';
 
       if (!isActive) {
-        const logs = await this.execCommand(`journalctl -u ${partyServiceName} --no-pager -n 20`);
-        logger.warn('Party server may not be running', { status: statusResult.stdout.trim(), logs: logs.stdout });
+        const logs = await this.execCommand(`journalctl -u ${partyServiceName} --no-pager -n 30`);
+        const errDetail = `Status: ${statusResult.stdout.trim()}. Last logs:\n${logs.stdout.slice(-1000)}`;
+        logger.error('Party server failed to start', { errDetail });
+        return { success: false, error: `Party server service is not running after deployment. ${errDetail}` };
+      }
+
+      // Verify the party server is actually accepting requests on its port
+      const portCheck = await this.execCommand(
+        `curl -sf --max-time 5 http://localhost:${partyPort}/ 2>/dev/null && echo "REACHABLE" || echo "UNREACHABLE"`
+      );
+      if (!portCheck.stdout.includes('REACHABLE')) {
+        logger.warn('Party server port not reachable after start', { port: partyPort });
+        // Non-fatal: service might just be slow to bind; continue and let the user retry
       }
 
       reportProgress('complete', 'Party server deployed successfully!', 100);
@@ -3471,18 +3482,30 @@ WantedBy=multi-user.target
   }
 
   /**
-   * Inject /party location blocks into the existing addon nginx config.
+   * Write the complete addon nginx config, optionally including /party location blocks.
    *
-   * A separate server block for the same domain+port is silently ignored by nginx
-   * (only one server block wins per hostname). Instead, we patch the addon's own
-   * nginx config file in-place using begin/end markers so the blocks live inside
-   * the correct server context.
+   * Generates the config from scratch (same approach as configureNginxWithExistingCertificate)
+   * using the proven `cat > file << 'EOF'` heredoc — single-quoted EOF means the shell does NOT
+   * expand nginx variables like $host, $1, $http_upgrade, etc. No read-parse-inject fragility.
    */
-  private async setupPartyNginx(domain: string, partyPort: number, _partyServiceName: string): Promise<void> {
+  private async writeAddonNginxConfig(
+    domain: string,
+    addonPort: number,
+    partyPort: number | null,   // null = no party blocks
+  ): Promise<void> {
     const addonNginxConf = this.options.config.paths.nginxConfig;
+    const serviceName = this.getServiceName();
 
-    const partyLocations = `
-    # BEGIN_PARTY_SERVER_LOCATIONS
+    if (!addonNginxConf) {
+      throw new Error('Addon nginx config path is not set in configuration — re-install the addon first.');
+    }
+
+    const existingCert = await this.checkExistingCertificate(domain);
+    const hasSSL = existingCert && existingCert.isValid;
+
+    // Party location blocks (only emitted when partyPort is provided)
+    const partyBlocks = partyPort === null ? '' : `
+    # Party server — exact match (GET /party → health check)
     location = /party {
         proxy_pass http://localhost:${partyPort}/;
         proxy_http_version 1.1;
@@ -3491,15 +3514,17 @@ WantedBy=multi-user.target
         proxy_set_header X-Forwarded-Proto $scheme;
         add_header Access-Control-Allow-Origin * always;
         add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "Content-Type, Authorization, X-Admin-Token, X-Viewer-Token" always;
+        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
         if ($request_method = OPTIONS) {
             add_header Access-Control-Allow-Origin * always;
             add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Content-Type, Authorization, X-Admin-Token, X-Viewer-Token" always;
+            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
             add_header Content-Length 0;
             return 204;
         }
     }
+
+    # Party server — API routes (/party/api/*, etc.)
     location /party/ {
         proxy_pass http://localhost:${partyPort}/;
         proxy_http_version 1.1;
@@ -3511,15 +3536,17 @@ WantedBy=multi-user.target
         proxy_connect_timeout 75s;
         add_header Access-Control-Allow-Origin * always;
         add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "Content-Type, Authorization, X-Admin-Token, X-Viewer-Token" always;
+        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
         if ($request_method = OPTIONS) {
             add_header Access-Control-Allow-Origin * always;
             add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Content-Type, Authorization, X-Admin-Token, X-Viewer-Token" always;
+            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
             add_header Content-Length 0;
             return 204;
         }
     }
+
+    # Party server — WebSocket upgrade (/party/ws/:sessionId)
     location /party/ws/ {
         proxy_pass http://localhost:${partyPort}/ws/;
         proxy_http_version 1.1;
@@ -3532,71 +3559,314 @@ WantedBy=multi-user.target
         proxy_read_timeout 86400s;
         proxy_send_timeout 86400s;
     }
-    # END_PARTY_SERVER_LOCATIONS`;
+`;
 
-    // Read the current addon nginx config
-    const readResult = await this.execCommand(`cat "${addonNginxConf}"`);
-    if (readResult.code !== 0 || !readResult.stdout.trim()) {
-      throw new Error(`Could not read addon nginx config at ${addonNginxConf}: ${readResult.stderr}`);
+    let nginxConfig: string;
+
+    if (hasSSL && existingCert) {
+      const { certificatePath, privateKeyPath } = existingCert;
+      nginxConfig = `
+# HTTP server — redirect all traffic to HTTPS
+server {
+    listen 80;
+    server_name ${domain};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+        try_files $uri =404;
     }
 
-    let currentConf = readResult.stdout;
-
-    // Remove any previously injected party blocks (idempotent)
-    currentConf = currentConf.replace(
-      /\n[ \t]*# BEGIN_PARTY_SERVER_LOCATIONS[\s\S]*?# END_PARTY_SERVER_LOCATIONS/g,
-      ''
-    );
-
-    // Insert before the last closing `}` of the last server block
-    const lastBrace = currentConf.lastIndexOf('}');
-    if (lastBrace === -1) {
-      throw new Error(`Unexpected nginx config format in ${addonNginxConf} — no closing brace found`);
+    location / {
+        return 301 https://$host$request_uri;
     }
-    const updatedConf = currentConf.slice(0, lastBrace) + partyLocations + '\n}\n';
+}
 
-    // Write via base64 — the only approach that reliably handles nginx variables ($host,
-    // $http_upgrade, regex chars, backslashes) over SSH exec without shell-escaping issues.
-    const tmpConf = `/tmp/stremio-nginx-party-patch.${Date.now()}.conf`;
-    const encoded = Buffer.from(updatedConf).toString('base64');
-    // base64 string only contains [A-Za-z0-9+/=] — single-quoting is perfectly safe.
-    await this.execCommand(`printf '%s' '${encoded}' | base64 -d > "${tmpConf}"`);
-    await this.execSudo(`cp "${addonNginxConf}" "${addonNginxConf}.party-bak"`);
-    await this.execSudo(`mv "${tmpConf}" "${addonNginxConf}"`);
+# HTTPS server
+server {
+    listen 443 ssl http2;
+    server_name ${domain};
 
-    // Clean up the now-obsolete separate party server config if it exists
+    ssl_certificate ${certificatePath};
+    ssl_certificate_key ${privateKeyPath};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+${partyBlocks}
+    location = / {
+        proxy_pass http://localhost:${addonPort}/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+    }
+
+    location = /stats {
+        proxy_pass http://localhost:${addonPort}/stats;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+    }
+
+    location ~ ^/([^/]+)/manifest\\.json$ {
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin * always;
+            add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+            add_header Access-Control-Max-Age 86400 always;
+            add_header Content-Length 0;
+            add_header Content-Type text/plain;
+            return 204;
+        }
+        proxy_pass http://localhost:${addonPort}/$1/manifest.json;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+    }
+
+    location ~ ^/([^/]+)/stream/(.+)$ {
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin * always;
+            add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+            add_header Access-Control-Max-Age 86400 always;
+            add_header Content-Length 0;
+            add_header Content-Type text/plain;
+            return 204;
+        }
+        proxy_pass http://localhost:${addonPort}/$1/stream/$2;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 75s;
+        proxy_send_timeout 300s;
+    }
+
+    location / {
+        proxy_pass http://localhost:${addonPort};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+    }
+}
+`;
+    } else {
+      nginxConfig = `
+# HTTP server (no SSL)
+server {
+    listen 80;
+    server_name ${domain};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+        try_files $uri =404;
+    }
+${partyBlocks}
+    location = / {
+        proxy_pass http://localhost:${addonPort}/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+    }
+
+    location ~ ^/([^/]+)/manifest\\.json$ {
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin * always;
+            add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+            add_header Content-Length 0;
+            return 204;
+        }
+        proxy_pass http://localhost:${addonPort}/$1/manifest.json;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+    }
+
+    location ~ ^/([^/]+)/stream/(.+)$ {
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin * always;
+            add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+            add_header Content-Length 0;
+            return 204;
+        }
+        proxy_pass http://localhost:${addonPort}/$1/stream/$2;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 75s;
+    }
+
+    location / {
+        proxy_pass http://localhost:${addonPort};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 10s;
+    }
+}
+`;
+    }
+
+    // Write via the proven heredoc approach — single-quoted 'STREMIO_NGINX_EOF' means the shell
+    // does NOT expand $host, $1, $http_upgrade, etc. inside the heredoc content.
+    const tmpConf = `/tmp/stremio-nginx.${Date.now()}.conf`;
+    const writeResult = await this.execCommand(`cat > ${tmpConf} << 'STREMIO_NGINX_EOF'\n${nginxConfig}\nSTREMIO_NGINX_EOF`);
+    if (writeResult.code !== 0) {
+      throw new Error(`Failed to write nginx config to temp file: ${writeResult.stderr}`);
+    }
+
+    // Verify the file was written and is non-empty
+    const sizeCheck = await this.execCommand(`test -s "${tmpConf}" && echo "OK" || echo "EMPTY"`);
+    if (!sizeCheck.stdout.trim().includes('OK')) {
+      throw new Error('Nginx config temp file is empty after write — heredoc failed');
+    }
+
+    // If we're adding party blocks, verify they're actually in the file
+    if (partyPort !== null) {
+      const blockCheck = await this.execCommand(`grep -c 'location = /party' "${tmpConf}" 2>/dev/null || echo "0"`);
+      if ((parseInt(blockCheck.stdout.trim()) || 0) === 0) {
+        throw new Error('Party location block is missing from the generated nginx config');
+      }
+    }
+
+    // Back up existing config and replace
+    await this.execSudo(`cp "${addonNginxConf}" "${addonNginxConf}.bak" 2>/dev/null || true`);
+    const mvResult = await this.execSudo(`mv "${tmpConf}" "${addonNginxConf}"`);
+    if (mvResult.code !== 0) {
+      throw new Error(`Failed to move nginx config into place: ${mvResult.stderr}`);
+    }
+
+    // Ensure symlink in sites-enabled points to this config
+    await this.execSudo(`ln -sf "${addonNginxConf}" /etc/nginx/sites-enabled/${serviceName}`);
+
+    // Remove the old (now-obsolete) separate party server config if it exists
     await this.execSudo(`rm -f /etc/nginx/sites-enabled/stremio-party-server`).catch(() => {});
     await this.execSudo(`rm -f /etc/nginx/sites-available/stremio-party-server`).catch(() => {});
 
     const testResult = await this.execSudo('nginx -t');
     if (testResult.code !== 0) {
-      // Restore backup
-      await this.execSudo(`mv "${addonNginxConf}.party-bak" "${addonNginxConf}"`);
-      throw new Error(`Nginx config test failed after injecting party blocks: ${testResult.stderr}`);
+      // Restore the backup so the addon keeps working
+      await this.execSudo(`mv "${addonNginxConf}.bak" "${addonNginxConf}" 2>/dev/null || true`);
+      await this.execSudo('systemctl reload nginx').catch(() => {});
+      throw new Error(`nginx -t failed after writing new config: ${testResult.stderr}`);
     }
 
     await this.execSudo('systemctl reload nginx');
-    logger.info('Party-server nginx locations injected into addon config', { addonNginxConf, domain, partyPort });
+    logger.info('Addon nginx config written', {
+      addonNginxConf,
+      domain,
+      addonPort,
+      partyPort,
+      hasSSL: !!hasSSL,
+    });
+  }
+
+  /**
+   * Configure nginx with party server blocks. Regenerates the full addon nginx config
+   * with /party location blocks baked in.
+   */
+  private async setupPartyNginx(domain: string, partyPort: number, _partyServiceName: string): Promise<void> {
+    const addonPort = this.options.config.addon.port || 7000;
+    await this.writeAddonNginxConfig(domain, addonPort, partyPort);
+    logger.info('Party-server nginx locations written into addon config', { domain, partyPort });
   }
 
   /**
    * Remove /party location blocks from the addon nginx config (called during uninstall).
+   * Regenerates the full addon nginx config without party blocks.
    */
   public async removePartyNginxLocations(): Promise<void> {
-    const addonNginxConf = this.options.config.paths.nginxConfig;
-    const readResult = await this.execCommand(`cat "${addonNginxConf}"`).catch(() => ({ code: 1, stdout: '', stderr: '' }));
-    if (readResult.code !== 0 || !readResult.stdout.trim()) return;
+    const domain = this.options.config.addon.domain;
+    const addonPort = this.options.config.addon.port || 7000;
+    if (!domain) return;
+    await this.writeAddonNginxConfig(domain, addonPort, null).catch((err: Error) => {
+      logger.warn('Could not remove party nginx blocks during uninstall', { error: err.message });
+    });
+  }
 
-    const cleaned = readResult.stdout.replace(
-      /\n[ \t]*# BEGIN_PARTY_SERVER_LOCATIONS[\s\S]*?# END_PARTY_SERVER_LOCATIONS/g,
-      ''
-    );
+  /**
+   * Diagnose party server state: nginx config contents, service status, and port reachability.
+   * Returns raw diagnostic strings for display in the UI.
+   */
+  public async diagnosePartyServer(): Promise<{
+    nginxConfigPath: string;
+    nginxHasPartyBlocks: boolean;
+    nginxConfigSnippet: string;
+    serviceStatus: string;
+    serviceLogs: string;
+    portReachable: boolean;
+  }> {
+    if (this.options.config.installation.type === 'remote' && !this.ssh) {
+      await this.connectToRemote();
+    }
+    const nginxConfPath = this.options.config.paths.nginxConfig || '(not set in config)';
+    const partyServiceName = 'stremio-party-server';
+    const partyPort = 7777;
 
-    const tmpConf = `/tmp/stremio-nginx-party-remove.${Date.now()}.conf`;
-    const encoded = Buffer.from(cleaned).toString('base64');
-    await this.execCommand(`printf '%s' '${encoded}' | base64 -d > "${tmpConf}"`);
-    await this.execSudo(`mv "${tmpConf}" "${addonNginxConf}"`);
-    await this.execSudo('nginx -t && systemctl reload nginx').catch(() => {});
+    const nginxRead = await this.execCommand(`cat "${nginxConfPath}" 2>&1`).catch(() => ({ stdout: '(error reading file)', code: 1, stderr: '' }));
+    const nginxContent = nginxRead.stdout || '';
+    const nginxHasPartyBlocks = nginxContent.includes('BEGIN_PARTY_SERVER_LOCATIONS');
+    // Show last 60 lines of nginx config as snippet
+    const lines = nginxContent.split('\n');
+    const nginxConfigSnippet = lines.slice(-60).join('\n');
+
+    const statusResult = await this.execCommand(`systemctl is-active ${partyServiceName} 2>&1`).catch(() => ({ stdout: 'unknown', code: 1, stderr: '' }));
+    const logsResult = await this.execCommand(`journalctl -u ${partyServiceName} --no-pager -n 20 2>&1`).catch(() => ({ stdout: '(no logs)', code: 0, stderr: '' }));
+
+    const portCheckResult = await this.execCommand(
+      `curl -sf --max-time 3 http://localhost:${partyPort}/ 2>/dev/null && echo "REACHABLE" || echo "UNREACHABLE"`
+    ).catch(() => ({ stdout: 'UNREACHABLE', code: 1, stderr: '' }));
+
+    return {
+      nginxConfigPath: nginxConfPath,
+      nginxHasPartyBlocks,
+      nginxConfigSnippet,
+      serviceStatus: statusResult.stdout.trim(),
+      serviceLogs: logsResult.stdout.slice(-2000),
+      portReachable: portCheckResult.stdout.includes('REACHABLE'),
+    };
   }
 
   /**

@@ -1367,6 +1367,24 @@ function setupIPC() {
     }
   });
 
+  /**
+   * Diagnostic: check nginx config contents and party service status.
+   * Returns raw text so we can see exactly what's on the server.
+   */
+  ipcMain.handle("party:diagnose", async (_event, addonId?: string) => {
+    try {
+      const configManager = new ConfigManager(addonId);
+      const config = await configManager.load();
+      if (!config) return { success: false, error: "No addon config found" };
+
+      const installManager = new InstallationManager({ config });
+      const info = await installManager.diagnosePartyServer();
+      return { success: true, data: info };
+    } catch (error) {
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
   logger.info("IPC handlers registered");
 }
 

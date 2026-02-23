@@ -117,6 +117,7 @@ const api = {
       ipcRenderer.invoke("party:install", options),
     status: (addonId?: string) => ipcRenderer.invoke("party:status", addonId),
     uninstall: (addonId?: string) => ipcRenderer.invoke("party:uninstall", addonId),
+    diagnose: (addonId?: string) => ipcRenderer.invoke("party:diagnose", addonId),
     onProgress: (callback: (progress: unknown) => void) => {
       ipcRenderer.on("party:progress", (_event, progress) => callback(progress));
     },
