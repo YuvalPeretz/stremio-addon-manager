@@ -3086,6 +3086,7 @@ StandardError=journal
 Environment=NODE_ENV=production
 Environment=PARTY_PORT=${partyPort}
 Environment=PARTY_ADDON_URL=${partyOptions.addonUrl}
+Environment=PARTY_ADDON_PORT=${this.options.config.addon.port || 7000}
 
 [Install]
 WantedBy=multi-user.target

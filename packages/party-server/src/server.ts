@@ -17,7 +17,7 @@ import type {
 } from "./types.js";
 
 export function createServer(
-  _config: PartyConfig,
+  config: PartyConfig,
   sessionManager: SessionManager,
   syncEngine: SyncEngine
 ): express.Application {
@@ -66,7 +66,7 @@ export function createServer(
         return;
       }
 
-      const result = await validateAddon(addonUrl, password);
+      const result = await validateAddon(addonUrl, password, config.addonPort);
       res.json(result);
     } catch (error) {
       console.error("Validate addon error:", error);
@@ -86,7 +86,7 @@ export function createServer(
       }
 
       // Validate the addon first
-      const validation = await validateAddon(addonUrl, addonPassword);
+      const validation = await validateAddon(addonUrl, addonPassword, config.addonPort);
       if (!validation.valid) {
         res.status(401).json({ error: validation.error || "Invalid addon credentials" });
         return;
