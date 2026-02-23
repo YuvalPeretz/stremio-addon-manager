@@ -4,6 +4,7 @@
 
 import express, { type Request, type Response } from "express";
 import cors from "cors";
+import axios from "axios";
 import type { PartyConfig } from "./config.js";
 import type { SessionManager } from "./session-manager.js";
 import type { SyncEngine } from "./sync-engine.js";
@@ -63,17 +64,15 @@ export function createServer(
       const targetUrl = decodeURIComponent(urlParam);
       const range = req.headers.range;
 
-      const upstream = await import("axios").then((m) =>
-        m.default.get(targetUrl, {
-          responseType: "stream",
-          headers: {
-            ...(range ? { Range: range } : {}),
-            "User-Agent": "Mozilla/5.0 (compatible; StremioParty/1.0)",
-          },
-          timeout: 15000,
-          maxRedirects: 10,
-        })
-      );
+      const upstream = await axios.get(targetUrl, {
+        responseType: "stream",
+        headers: {
+          ...(range ? { Range: range } : {}),
+          "User-Agent": "Mozilla/5.0 (compatible; StremioParty/1.0)",
+        },
+        timeout: 30000,
+        maxRedirects: 10,
+      });
 
       res.status(upstream.status);
       res.setHeader("Access-Control-Allow-Origin", "*");
