@@ -10,7 +10,7 @@ import type { Subtitle } from "./types.js";
 
 const subtitleCache = new NodeCache({ stdTTL: 86400 }); // 24 hours
 
-const WYZIE_API_BASE = "https://sub.wyzie.ru/api";
+const WYZIE_API_BASE = "https://sub.wyzie.ru";
 
 const PREFERRED_LANGUAGES = [
   "en", "he", "es", "fr", "de", "it", "pt", "ru", "ar",
@@ -58,9 +58,9 @@ export async function fetchSubtitles(
   try {
     let apiUrl: string;
     if (type === "series" && season !== undefined && episode !== undefined) {
-      apiUrl = `${WYZIE_API_BASE}/imdb/${imdbId}/${season}/${episode}`;
+      apiUrl = `${WYZIE_API_BASE}/search?id=${imdbId}&season=${season}&episode=${episode}`;
     } else {
-      apiUrl = `${WYZIE_API_BASE}/imdb/${imdbId}`;
+      apiUrl = `${WYZIE_API_BASE}/search?id=${imdbId}`;
     }
 
     const response = await axios.get(apiUrl, {

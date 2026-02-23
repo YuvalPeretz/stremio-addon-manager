@@ -128,6 +128,57 @@ export function createServer(
     }
   });
 
+  // ─── Subtitle Proxy ────────────────────────────────────────
+  // Fetches any external subtitle file and converts SRT → WebVTT so the
+  // browser <track> element can display it (browsers only support WebVTT).
+  // Also adds CORS headers so addon-party.web.app can load it.
+
+  app.options("/api/subtitle", (_req: Request, res: Response) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "");
+    res.status(204).send();
+  });
+
+  app.get("/api/subtitle", async (req: Request, res: Response) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+
+    const urlParam = req.query.url as string | undefined;
+    if (!urlParam) {
+      res.status(400).json({ error: "url parameter required" });
+      return;
+    }
+
+    try {
+      const response = await axios.get(urlParam, {
+        responseType: "text",
+        timeout: 15000,
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; StremioParty/1.0)" },
+        maxRedirects: 10,
+      });
+
+      let content: string = response.data as string;
+
+      // Convert SRT → WebVTT when needed.  VTT always starts with "WEBVTT".
+      if (!content.trimStart().startsWith("WEBVTT")) {
+        content =
+          "WEBVTT\n\n" +
+          content
+            .replace(/\r\n/g, "\n")
+            // SRT timestamps use comma millisecond separator; VTT requires a dot.
+            .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, "$1.$2");
+      }
+
+      res.setHeader("Content-Type", "text/vtt; charset=utf-8");
+      res.send(content);
+    } catch (error) {
+      if (!res.headersSent) {
+        console.error("Subtitle proxy error:", error instanceof Error ? error.message : error);
+        res.status(502).json({ error: "Failed to fetch subtitle" });
+      }
+    }
+  });
+
   app.get("/health", (_req: Request, res: Response) => {
     res.json({
       status: "ok",
@@ -398,7 +449,7 @@ export function createServer(
 
   // ─── Stream Resolution ───────────────────────────────────
 
-  /** Build a proxy URL so the browser fetches video bytes through this server
+  /** Build a video proxy URL so the browser fetches video bytes through this server
    *  (bypasses CDN CORS restrictions like Real-Debrid). */
   function buildProxyUrl(req: Request, rawUrl: string): string {
     const proto = (req.get("x-forwarded-proto") as string | undefined) ?? req.protocol;
@@ -406,6 +457,15 @@ export function createServer(
     // When behind nginx (x-forwarded-proto is set), party server is at /party/
     const partyPrefix = req.get("x-forwarded-proto") ? "/party" : "";
     return `${proto}://${host}${partyPrefix}/api/proxy?url=${encodeURIComponent(rawUrl)}`;
+  }
+
+  /** Build a subtitle proxy URL — fetches the subtitle file server-side and
+   *  converts SRT → WebVTT so the browser <track> element can display it. */
+  function buildSubtitleUrl(req: Request, rawUrl: string): string {
+    const proto = (req.get("x-forwarded-proto") as string | undefined) ?? req.protocol;
+    const host = req.get("host") ?? `localhost:${config.port}`;
+    const partyPrefix = req.get("x-forwarded-proto") ? "/party" : "";
+    return `${proto}://${host}${partyPrefix}/api/subtitle?url=${encodeURIComponent(rawUrl)}`;
   }
 
   app.post("/api/sessions/:id/resolve", async (req: Request, res: Response) => {
@@ -480,7 +540,7 @@ export function createServer(
       // has crossOrigin="anonymous".  Routing through our proxy adds the header.
       const proxiedSubtitles = subtitles.map((sub) => ({
         ...sub,
-        url: buildProxyUrl(req, sub.url),
+        url: buildSubtitleUrl(req, sub.url),
       }));
 
       const content: SessionContent = {
