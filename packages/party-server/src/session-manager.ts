@@ -285,6 +285,7 @@ export class SessionManager {
       poster: content.poster,
       streamUrl: content.streamUrl,
       subtitles: content.subtitles,
+      audioTracks: content.audioTracks,
       duration: content.duration,
       season: content.season,
       episode: content.episode,

@@ -18,6 +18,7 @@ import type {
   ResolveStreamRequest,
   SessionContent,
   Subtitle,
+  AudioTrackInfo,
 } from "./types.js";
 
 // Detect FFmpeg at startup — needed for AC3/DTS → AAC audio transcoding.
@@ -47,6 +48,77 @@ if (ffmpegBin) {
   console.log(`[party] FFmpeg found at ${ffmpegBin} — audio transcoding ENABLED`);
 } else {
   console.log("[party] FFmpeg not found — audio transcoding DISABLED (AC3 streams will be silent in Chrome)");
+}
+
+// Detect FFprobe (ships alongside FFmpeg) for audio track probing.
+let ffprobeBin: string | null = null;
+(function detectFfprobe() {
+  if (ffmpegBin) {
+    // Try replacing 'ffmpeg' with 'ffprobe' in the same directory
+    const candidate = ffmpegBin.replace(/ffmpeg$/, "ffprobe");
+    try {
+      execSync(`test -x "${candidate}"`, { stdio: "ignore" });
+      ffprobeBin = candidate;
+      return;
+    } catch { /* fall through */ }
+  }
+  try {
+    const found = execSync("which ffprobe", { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }).trim();
+    if (found) { ffprobeBin = found; return; }
+  } catch { /* fall through */ }
+  const probes = ["/usr/bin/ffprobe", "/usr/local/bin/ffprobe", "/bin/ffprobe"];
+  for (const c of probes) {
+    try {
+      execSync(`test -x "${c}"`, { stdio: "ignore" });
+      ffprobeBin = c;
+      return;
+    } catch { /* continue */ }
+  }
+})();
+console.log(ffprobeBin
+  ? `[party] FFprobe found at ${ffprobeBin} — multi-audio-track detection ENABLED`
+  : "[party] FFprobe not found — audio track list unavailable");
+
+/**
+ * Probe a URL with FFprobe and return its audio streams.
+ * Returns an empty array if FFprobe is unavailable or the probe fails.
+ */
+async function probeAudioTracks(url: string): Promise<AudioTrackInfo[]> {
+  if (!ffprobeBin) return [];
+  return new Promise((resolve) => {
+    const args = [
+      "-v", "quiet",
+      "-print_format", "json",
+      "-show_streams",
+      "-select_streams", "a",
+      "-i", url,
+    ];
+    const proc = spawn(ffprobeBin!, args, { stdio: ["ignore", "pipe", "ignore"] });
+    let output = "";
+    proc.stdout.on("data", (d: Buffer) => { output += d.toString(); });
+    const timer = setTimeout(() => { proc.kill("SIGKILL"); resolve([]); }, 12000);
+    proc.on("close", () => {
+      clearTimeout(timer);
+      try {
+        const json = JSON.parse(output) as { streams: Array<{
+          index: number;
+          codec_name: string;
+          tags?: { language?: string; title?: string };
+        }> };
+        const tracks: AudioTrackInfo[] = (json.streams ?? []).map((s, i) => ({
+          index: i,
+          language: s.tags?.language ?? "und",
+          label: s.tags?.title || s.tags?.language || `Track ${i + 1}`,
+          codec: s.codec_name ?? "unknown",
+        }));
+        console.log(`[party] Probed ${tracks.length} audio track(s):`, tracks.map((t) => `${t.label}(${t.codec})`).join(", "));
+        resolve(tracks);
+      } catch {
+        resolve([]);
+      }
+    });
+    proc.on("error", () => { clearTimeout(timer); resolve([]); });
+  });
 }
 
 export function createServer(
@@ -105,6 +177,8 @@ export function createServer(
     // doesn't have to fetch the whole file from the beginning after a seek.
     const wantTranscode = req.query.transcode === "1" && ffmpegBin !== null;
     const startSec = Math.max(0, Number(req.query.start ?? 0) || 0);
+    // 0-based audio stream index (e.g. 0 = first audio track, 1 = second)
+    const audioTrack = Math.max(0, Number(req.query.audio_track ?? 0) || 0);
 
     if (wantTranscode && ffmpegBin) {
       res.setHeader("Content-Type", "video/x-matroska");
@@ -113,15 +187,16 @@ export function createServer(
       const args = [
         "-hide_banner", "-loglevel", "error",
         "-user_agent", "Mozilla/5.0 (compatible; StremioParty/1.0)",
-        // Fast keyframe seek BEFORE -i (avoids decoding leading frames)
         ...(startSec > 0 ? ["-ss", String(startSec)] : []),
         "-i", urlParam,
-        "-c:v", "copy",           // Copy video — no re-encode, no quality loss
-        "-c:a", "aac",            // Transcode audio → AAC (Chrome-compatible)
+        // Map the chosen video + audio stream explicitly so the user can pick language
+        "-map", "0:v:0",
+        "-map", `0:a:${audioTrack}`,
+        "-c:v", "copy",
+        "-c:a", "aac",
         "-b:a", "192k",
-        // Shift output timestamps so video.currentTime ≈ movie position
         ...(startSec > 0 ? ["-output_ts_offset", String(startSec)] : []),
-        "-f", "matroska",         // Streaming-friendly container
+        "-f", "matroska",
         "pipe:1",
       ];
 
@@ -549,11 +624,11 @@ export function createServer(
     return `${proto}://${host}${partyPrefix}/api/proxy?url=${encodeURIComponent(rawUrl)}`;
   }
 
-  /** Build a transcoded proxy URL: same as above but adds &transcode=1&start=0
+  /** Build a transcoded proxy URL: same as above but adds &transcode=1&start=0&audio_track=0
    *  so the proxy pipes through FFmpeg (audio → AAC).  Only used when FFmpeg
    *  is available on the server. */
   function buildTranscodeUrl(req: Request, rawUrl: string): string {
-    return buildProxyUrl(req, rawUrl) + "&transcode=1&start=0";
+    return buildProxyUrl(req, rawUrl) + "&transcode=1&start=0&audio_track=0";
   }
 
   /** Build a subtitle proxy URL — fetches the subtitle file server-side and
@@ -629,6 +704,12 @@ export function createServer(
         subtitles = await fetchSubtitles(type, imdbId, seasonNum, episode);
       }
 
+      // Probe audio tracks in parallel with subtitle fetch so we know what
+      // languages are available.  Runs FFprobe on the raw CDN URL.
+      const [audioTracksResult] = await Promise.all([
+        probeAudioTracks(rawStreamUrl),
+      ]);
+
       // Wrap the CDN URL in our proxy to fix CORS for the video stream.
       // Use the transcoding proxy when FFmpeg is available so AC3/DTS audio
       // (common in MKV files from Real-Debrid) is re-encoded to AAC which
@@ -653,6 +734,7 @@ export function createServer(
         poster: poster ?? "",
         streamUrl: proxiedUrl,
         subtitles: proxiedSubtitles,
+        audioTracks: audioTracksResult,
         duration: 0,
         season: seasonNum,
         episode,

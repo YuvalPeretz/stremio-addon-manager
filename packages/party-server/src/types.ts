@@ -17,6 +17,18 @@ export interface Subtitle {
   lang: string;
 }
 
+/** Audio track detected by FFprobe from the stream container */
+export interface AudioTrackInfo {
+  /** 0-based audio-stream index used in FFmpeg -map 0:a:INDEX */
+  index: number;
+  /** ISO 639-2/B language tag (e.g. "eng", "ita", "und") */
+  language: string;
+  /** Human-readable label for the UI (title tag → language → "Track N") */
+  label: string;
+  /** Codec name from FFprobe (e.g. "ac3", "aac", "eac3") */
+  codec: string;
+}
+
 export interface SessionContent {
   type: "movie" | "series";
   imdbId: string;
@@ -25,6 +37,7 @@ export interface SessionContent {
   poster: string;
   streamUrl: string;
   subtitles: Subtitle[];
+  audioTracks: AudioTrackInfo[];
   duration: number;
   season?: number;
   episode?: number;
@@ -79,6 +92,8 @@ export interface SessionContentPublic {
   /** Proxied stream URL — shared with all viewers so everyone can play the same content */
   streamUrl: string;
   subtitles: Subtitle[];
+  /** Audio tracks detected by FFprobe — each viewer picks their own */
+  audioTracks: AudioTrackInfo[];
   duration: number;
   season?: number;
   episode?: number;
