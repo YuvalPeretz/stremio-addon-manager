@@ -8,6 +8,14 @@ export interface TorrentInfo {
   magnetLink: string;
   quality: string;
   size: string;
+  /**
+   * 0-based file index within the torrent, provided by Torrentio.
+   * When present we can skip the expensive findMatchingFile step in
+   * Real-Debrid processing and select the file directly.
+   */
+  fileIdx?: number;
+  /** Source that produced this result, for logging */
+  source?: string;
 }
 
 export interface Subtitle {

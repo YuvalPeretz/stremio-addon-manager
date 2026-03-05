@@ -16,6 +16,7 @@ import {
   type SeasonEpisode,
   type ScoredTorrent,
 } from "./episode-matching.js";
+import { sortTorrents, sortStreams, buildStreamName } from "./stream-sorter.js";
 import { fetchSubtitles } from "./subtitle-fetcher.js";
 
 /**
@@ -27,76 +28,83 @@ function extractInfoHash(magnetLink: string): string | null {
 }
 
 /**
- * Process Real-Debrid stream (with caching)
+ * Process a Real-Debrid stream from a magnet link.
+ *
+ * @param magnetLink    Magnet link for the torrent
+ * @param rdClient      RD API client
+ * @param cacheManager
+ * @param knownFileIdx  When provided (from Torrentio), skip findMatchingFile and
+ *                      use this index directly — faster and more reliable
+ * @param seasonEpisode Fallback for episode matching when knownFileIdx is absent
  */
 async function processRealDebridStream(
   magnetLink: string,
   rdClient: RealDebridClient,
   cacheManager: CacheManager,
-  fileIndex: number = 0,
+  knownFileIdx?: number,
   seasonEpisode: SeasonEpisode | null = null
 ): Promise<{ url: string; title: string } | null> {
-  // Extract infoHash for caching
   const infoHash = extractInfoHash(magnetLink);
-  // Include season/episode in cache key for series
-  const cacheKey = seasonEpisode
-    ? `stream_${infoHash}_S${seasonEpisode.season}E${seasonEpisode.episode}`
-    : `stream_${infoHash}_${fileIndex}`;
+  const cacheKey =
+    knownFileIdx !== undefined
+      ? `stream_${infoHash}_fi${knownFileIdx}`
+      : seasonEpisode
+        ? `stream_${infoHash}_S${seasonEpisode.season}E${seasonEpisode.episode}`
+        : `stream_${infoHash}_0`;
 
-  // Check cache first
   if (infoHash) {
     const cached = cacheManager.getStream(cacheKey);
-    if (cached) {
-      return cached as { url: string; title: string };
-    }
+    if (cached) return cached as { url: string; title: string };
   }
 
   try {
-    // Step 1: Add magnet to Real-Debrid
     console.log("Adding magnet to Real-Debrid...");
     const addResult = await rdClient.addMagnet(magnetLink);
     const torrentId = addResult.id;
 
-    // Step 2: Get torrent info first to see available files
     console.log("Getting torrent info...");
     let torrentInfo = await rdClient.getTorrentInfo(torrentId);
 
-    // Step 3: Find the best matching file if we have episode info
-    let selectedFileId = fileIndex;
-    let selectedFileIndex = fileIndex;
-    if (seasonEpisode && torrentInfo.files && torrentInfo.files.length > 0) {
+    // Determine which file to select
+    let selectedFileId: number;
+    let selectedFileIndex: number;
+
+    if (knownFileIdx !== undefined) {
+      // Torrentio already identified the correct file — use it directly
+      selectedFileIndex = knownFileIdx;
+      // RD file IDs are 1-based; map index to ID by looking at the files array
+      if (torrentInfo.files && torrentInfo.files.length > knownFileIdx) {
+        selectedFileId = (torrentInfo.files[knownFileIdx] as { id?: number }).id ?? knownFileIdx + 1;
+      } else {
+        selectedFileId = knownFileIdx + 1;
+      }
+      console.log(`Using Torrentio-provided fileIdx=${knownFileIdx} (RD fileId=${selectedFileId})`);
+    } else if (seasonEpisode && torrentInfo.files && torrentInfo.files.length > 0) {
       const matchResult = findMatchingFile(torrentInfo.files, seasonEpisode.season, seasonEpisode.episode);
       selectedFileId = matchResult.fileId;
       selectedFileIndex = matchResult.index;
-      console.log(
-        `Selected file ID ${selectedFileId} (index ${selectedFileIndex}) for S${seasonEpisode.season}E${seasonEpisode.episode}`
-      );
+      console.log(`findMatchingFile → fileId=${selectedFileId} index=${selectedFileIndex} for S${seasonEpisode.season}E${seasonEpisode.episode}`);
+    } else {
+      selectedFileId = 0;
+      selectedFileIndex = 0;
     }
 
-    // Step 4: Select the specific file (or all if single file torrent)
     console.log("Selecting files...");
     if (torrentInfo.files && torrentInfo.files.length > 1) {
-      // Select only the matching file using file ID
       await rdClient.selectFiles(torrentId, selectedFileId.toString());
     } else {
-      // Single file torrent or no file info, select all
       await rdClient.selectFiles(torrentId);
     }
 
-    // Step 5: Poll for torrent readiness (with adaptive wait time)
-    // Check if torrent is already ready (cached torrents are often instant)
     torrentInfo = await rdClient.getTorrentInfo(torrentId);
     let attempts = 0;
     const maxAttempts = 10;
-    const initialWait = 500; // Start with 500ms instead of 2000ms
-
     while (
       torrentInfo.status !== "downloaded" &&
       torrentInfo.status !== "waiting_files_selection" &&
       attempts < maxAttempts
     ) {
-      // Adaptive wait: shorter for first attempts, longer if still processing
-      const waitTime = attempts < 2 ? initialWait : 1000;
+      const waitTime = attempts < 2 ? 500 : 1000;
       await new Promise((resolve) => setTimeout(resolve, waitTime));
       torrentInfo = await rdClient.getTorrentInfo(torrentId);
       attempts++;
@@ -106,26 +114,18 @@ async function processRealDebridStream(
       throw new Error(`Torrent not ready after ${attempts} attempts: ${torrentInfo.status}`);
     }
 
-    // Step 6: Get the file link
     if (torrentInfo.links && torrentInfo.links.length > 0) {
-      // Use the selected file index, or first file if index is out of range
       const link = torrentInfo.links[selectedFileIndex] || torrentInfo.links[0];
-
-      // Step 7: Unrestrict the link
       console.log("Unrestricting link...");
       const unrestrictedResult = await rdClient.unrestrictLink(link);
-
       const streamData = {
         url: unrestrictedResult.download,
         title: `RD: ${torrentInfo.filename || "Stream"}`,
       };
-
-      // Store in cache
       if (infoHash) {
         cacheManager.setStream(cacheKey, streamData);
-        console.log(`[CACHE MISS] Processed and cached stream for ${infoHash.substring(0, 8)}...`);
+        console.log(`[CACHE MISS] Cached stream for ${infoHash.substring(0, 8)}...`);
       }
-
       return streamData;
     }
 
@@ -152,8 +152,15 @@ export async function handleStreamRequest(
   const requestCacheKey = `request_${type}_${id}`;
   const cachedResponse = cacheManager.getStream(requestCacheKey);
   if (cachedResponse) {
-    console.log(`✓ Returning cached response for ${type}/${id} (${(cachedResponse as StreamResponse).streams.length} streams)`);
-    return cachedResponse as StreamResponse;
+    const cached = cachedResponse as StreamResponse;
+    // Reject stale empty responses — a previously-failed lookup shouldn't be
+    // served forever.  Non-empty responses are always valid to serve.
+    if (cached.streams.length === 0) {
+      console.log(`Ignoring cached empty response for ${type}/${id} — will retry`);
+    } else {
+      console.log(`✓ Returning cached response for ${type}/${id} (${cached.streams.length} streams)`);
+      return cached;
+    }
   }
 
   try {
@@ -170,40 +177,40 @@ export async function handleStreamRequest(
     const metadata = await getCinemetaMetadata(type, id, cacheManager);
     if (!metadata) {
       console.log("No metadata found for:", id);
-      const emptyResponse: StreamResponse = { streams: [] };
-      cacheManager.setStream(requestCacheKey, emptyResponse);
-      return emptyResponse;
+      // Do NOT cache metadata failures — they may recover
+      return { streams: [] };
     }
 
     console.log(`Found metadata: ${metadata.name} (${metadata.year})`);
 
-    // Step 4: Search for torrents using Torrentio
-    const torrents = await searchTorrents(id, type, cacheManager);
+    // Step 4: Search for torrents from all sources (Torrentio+RD, Torrentio, Knightcrawler)
+    // Pass the RD API token so Torrentio returns RD-pre-filtered results with fileIdx,
+    // matching exactly what the user sees in Stremio.
+    const torrents = await searchTorrents(id, type, cacheManager, config.rdApiToken);
 
     if (torrents.length === 0) {
       console.log("No torrents found for:", id);
-      const emptyResponse: StreamResponse = { streams: [] };
-      cacheManager.setStream(requestCacheKey, emptyResponse);
-      return emptyResponse;
+      // Do NOT cache empty torrent results — the sources may return results next time
+      return { streams: [] };
     }
 
     console.log(`Found ${torrents.length} torrents from Torrentio`);
 
     // Step 5: Filter and prioritize torrents for series
-    let filteredTorrents: TorrentInfo[] = torrents;
+    // Within each group, sort by quality score so the best resolution/codec
+    // is processed first and appears first in the Stremio stream picker.
+    let filteredTorrents: TorrentInfo[] = sortTorrents(torrents);
     if (seasonEpisode) {
-      // Score and filter torrents based on episode matching
-      const scoredTorrents: ScoredTorrent[] = torrents.map((torrent) => ({
+      const scoredTorrents: ScoredTorrent[] = filteredTorrents.map((torrent) => ({
         ...torrent,
         matchScore: getEpisodeMatchScore(torrent.title, seasonEpisode.season, seasonEpisode.episode),
         matches: matchesEpisode(torrent.title, seasonEpisode.season, seasonEpisode.episode),
       }));
 
-      // Separate matching and non-matching torrents
-      const matchingTorrents = scoredTorrents.filter((t) => t.matches).sort((a, b) => b.matchScore - a.matchScore);
+      // Within each bucket, order is already best-quality-first from sortTorrents
+      const matchingTorrents = scoredTorrents.filter((t) => t.matches);
       const nonMatchingTorrents = scoredTorrents.filter((t) => !t.matches);
 
-      // Prioritize matching torrents, but include some non-matching as fallback
       filteredTorrents = [...matchingTorrents, ...nonMatchingTorrents.slice(0, 3)];
 
       console.log(
@@ -289,17 +296,23 @@ export async function handleStreamRequest(
         const hasHebrew = /\bheb\b|hebrew|עברית/i.test(torrent.title);
         const hebrewInfo = hasHebrew ? " [🇮🇱 HEBREW AUDIO]" : "";
         
-        console.log(`Processing torrent: ${torrent.title.substring(0, 50)}...${matchInfo}${hebrewInfo}`);
+        const sourceTag = torrent.source ? ` [${torrent.source}]` : "";
+        const fileIdxTag = torrent.fileIdx !== undefined ? ` fileIdx=${torrent.fileIdx}` : "";
+        console.log(`Processing torrent: ${torrent.title.substring(0, 50)}...${matchInfo}${hebrewInfo}${sourceTag}${fileIdxTag}`);
 
-        // Try to add magnet to Real-Debrid with episode info
-        const streamUrl = await processRealDebridStream(magnetLink, rdClient, cacheManager, 0, seasonEpisode);
+        // If Torrentio provided a fileIdx, use it directly (faster, more reliable).
+        // Otherwise fall back to episode-title matching.
+        const fileIdx = torrent.fileIdx;
+        const episodeFallback = fileIdx !== undefined ? null : seasonEpisode;
+        const streamUrl = await processRealDebridStream(
+          magnetLink, rdClient, cacheManager, fileIdx, episodeFallback
+        );
 
         if (streamUrl && streamUrl.url) {
-          // Match legacy code exactly - include notWebReady: false
-          // This ensures compatibility across all platforms (mobile, TV, desktop)
+          const { name, title } = buildStreamName(torrent);
           const stream: Stream = {
-            name: `RD+ ${torrent.quality || ""}`.trim(),
-            title: torrent.title,
+            name,
+            title,
             url: streamUrl.url,
             behaviorHints: {
               bingeGroup: "real-debrid",
@@ -352,19 +365,24 @@ export async function handleStreamRequest(
       });
     }
     
-    // Cache the entire response for subsequent requests
+    // Final display sort: best quality / most seeds at the top
+    sortStreams(streams);
+
     const response: StreamResponse = { streams };
-    cacheManager.setStream(requestCacheKey, response);
-    console.log(`✓ Cached response for ${type}/${id} (${streams.length} streams)`);
-    
+
+    // Only cache non-empty responses — empty means something failed transiently
+    // and we don't want to lock users out for the full cache TTL.
+    if (streams.length > 0) {
+      cacheManager.setStream(requestCacheKey, response);
+      console.log(`✓ Cached response for ${type}/${id} (${streams.length} streams)`);
+    } else {
+      console.warn(`No streams resolved for ${type}/${id} — not caching empty result`);
+    }
+
     return response;
   } catch (error) {
     console.error("Stream handler error:", error);
-    
-    // Cache empty response for failed requests to prevent repeated failures
-    const errorResponse: StreamResponse = { streams: [] };
-    cacheManager.setStream(requestCacheKey, errorResponse);
-    
-    return errorResponse;
+    // Do NOT cache errors — the next request should retry fresh
+    return { streams: [] };
   }
 }
