@@ -670,6 +670,35 @@ function setupIPC() {
     }
   });
 
+  // ── SSH helper ───────────────────────────────────────────────────────────
+  // When the renderer passes ssh=undefined (all current callers do), load the
+  // SSH target from the stored addon config so remote service commands actually
+  // reach the Raspberry Pi instead of running on the local Mac/PC.
+  async function resolveSSH(
+    explicitSsh: unknown,
+    addonId?: string
+  ): Promise<SSHManager | undefined> {
+    if (explicitSsh) return new SSHManager(explicitSsh as ConstructorParameters<typeof SSHManager>[0]);
+    try {
+      const configManager = new ConfigManager(addonId);
+      await configManager.load();
+      const config = configManager.get();
+      const target = config?.installation?.target;
+      if (target?.host && target?.username) {
+        return new SSHManager({
+          host: target.host,
+          port: target.port ?? 22,
+          username: target.username,
+          password: target.password,
+          privateKeyPath: target.privateKeyPath,
+        });
+      }
+    } catch {
+      // No config or no SSH target — fall through to local mode
+    }
+    return undefined;
+  }
+
   // Service Management
   ipcMain.handle("service:status", async (_event, ssh) => {
     try {
@@ -694,7 +723,7 @@ function setupIPC() {
 
   ipcMain.handle("service:start", async (_event, ssh, addonId?: string) => {
     try {
-      const sshConnection = ssh ? new SSHManager(ssh) : undefined;
+      const sshConnection = await resolveSSH(ssh, addonId);
       if (sshConnection) {
         await sshConnection.connect();
       }
@@ -716,7 +745,7 @@ function setupIPC() {
 
   ipcMain.handle("service:stop", async (_event, ssh, addonId?: string) => {
     try {
-      const sshConnection = ssh ? new SSHManager(ssh) : undefined;
+      const sshConnection = await resolveSSH(ssh, addonId);
       if (sshConnection) {
         await sshConnection.connect();
       }
@@ -738,7 +767,7 @@ function setupIPC() {
 
   ipcMain.handle("service:restart", async (_event, ssh, addonId?: string) => {
     try {
-      const sshConnection = ssh ? new SSHManager(ssh) : undefined;
+      const sshConnection = await resolveSSH(ssh, addonId);
       if (sshConnection) {
         await sshConnection.connect();
       }
@@ -1022,7 +1051,7 @@ function setupIPC() {
 
   ipcMain.handle("service:logs", async (_event, lines: number, ssh, addonId?: string) => {
     try {
-      const sshConnection = ssh ? new SSHManager(ssh) : undefined;
+      const sshConnection = await resolveSSH(ssh, addonId);
       if (sshConnection) {
         await sshConnection.connect();
       }
@@ -1042,9 +1071,9 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle("service:getLogs", async (_event, lines: number = 100, ssh, addonId?: string) => {
+  ipcMain.handle("service:getLogs", async (_event, lines: number = 200, ssh, addonId?: string) => {
     try {
-      const sshConnection = ssh ? new SSHManager(ssh) : undefined;
+      const sshConnection = await resolveSSH(ssh, addonId);
       if (sshConnection) {
         await sshConnection.connect();
       }
@@ -1064,23 +1093,25 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle("service:clearLogs", async (_event, ssh) => {
+  ipcMain.handle("service:clearLogs", async (_event, ssh, addonId?: string) => {
     try {
-      const sshConnection = ssh ? new SSHManager(ssh) : undefined;
+      const sshConnection = await resolveSSH(ssh, addonId);
       if (sshConnection) {
         await sshConnection.connect();
       }
 
-      // Clear logs by truncating the log file
-      const systemInfo = sshConnection ? await OSDetector.detectRemote(sshConnection as any) : OSDetector.detect();
-      const logPath = systemInfo.os === "linux" ? "/var/log/stremio-addon.log" : "./stremio-addon.log";
+      const serviceName = await getServiceName(addonId);
 
+      // Use journalctl vacuum on Linux (systemd), or truncate the log file on macOS/Windows
       if (sshConnection) {
-        await sshConnection.execCommand(`echo "" > ${logPath}`);
+        // On remote Linux, rotate/clear the unit journal
+        await sshConnection.execCommand(`sudo journalctl --rotate && sudo journalctl --vacuum-time=1s -u ${serviceName} 2>/dev/null || true`);
         await sshConnection.disconnect();
       } else {
-        const fs = await import("fs/promises");
-        await fs.writeFile(logPath, "");
+        const systemInfo = OSDetector.detect();
+        const logPath = systemInfo.os === "linux" ? "/var/log/stremio-addon.log" : `/tmp/${serviceName}.log`;
+        const fsp = await import("fs/promises");
+        await fsp.writeFile(logPath, "").catch(() => {});
       }
 
       return { success: true };
