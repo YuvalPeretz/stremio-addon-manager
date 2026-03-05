@@ -76,7 +76,8 @@ for (const pkg of packages) {
     try {
       const stat = fs.statSync(source);
       if (stat.isDirectory()) {
-        fs.cpSync(source, target, { recursive: true });
+        // force: true prevents EEXIST on Windows when the target already exists
+        fs.cpSync(source, target, { recursive: true, force: true });
         console.log(`   ✓ Copied directory: ${item}`);
       } else {
         // Ensure target directory exists for files
