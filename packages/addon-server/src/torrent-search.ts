@@ -137,12 +137,12 @@ export async function searchTorrents(
     : null;
 
   const torrentioBase = "https://torrentio.strem.fun";
-  const knightcrawlerBase = "https://knightcrawler.elfhosted.com";
   const streamPath = `/stream/${type}/${imdbId}.json`;
 
   const fetches: Promise<{ streams: TorrentioStream[]; source: string }>[] = [];
 
-  // Source 1: Torrentio with RD key (highest priority — matches Stremio behaviour)
+  // Source 1: Torrentio with RD key (highest priority — mirrors Stremio behaviour;
+  // returns only RD-cached content with exact per-file fileIdx already resolved)
   if (rdConfig) {
     fetches.push(
       fetchTorrentioEndpoint(
@@ -152,20 +152,12 @@ export async function searchTorrents(
     );
   }
 
-  // Source 2: Torrentio public (broader, no RD filtering)
+  // Source 2: Torrentio public (broader, no RD filtering; fileIdx still included)
   fetches.push(
     fetchTorrentioEndpoint(
       `${torrentioBase}/${baseConfig}${streamPath}`,
       "Torrentio"
     ).then((streams) => ({ streams, source: "Torrentio" }))
-  );
-
-  // Source 3: Knightcrawler (independent index, resilient fallback)
-  fetches.push(
-    fetchTorrentioEndpoint(
-      `${knightcrawlerBase}${streamPath}`,
-      "Knightcrawler"
-    ).then((streams) => ({ streams, source: "Knightcrawler" }))
   );
 
   const results = await Promise.allSettled(fetches);

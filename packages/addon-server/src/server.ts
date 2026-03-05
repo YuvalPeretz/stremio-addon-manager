@@ -5,6 +5,7 @@
 import express, { type Request, type Response, type NextFunction, type RequestHandler } from "express";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
+import axios from "axios";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -213,6 +214,64 @@ export function createServer(
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res.setHeader("Access-Control-Max-Age", "86400");
     res.status(204).send();
+  });
+
+  // ── Debug: torrent-source probe ──────────────────────────────────────────
+  // GET /:password/debug/search?type=series&id=tt0409591:2:42
+  // Tests each torrent source independently and returns raw results so you can
+  // diagnose why a particular piece of content returns 0 streams.
+  app.get("/:password/debug/search", authenticateToken, async (req: Request, res: Response) => {
+    const type = req.query.type as string;
+    const id = req.query.id as string;
+    if (!type || !id) {
+      res.json({ error: "Pass ?type=series&id=tt0409591:2:42 (or type=movie)" });
+      return;
+    }
+
+    const baseConfig = "sort=qualitysize%7Clanguage=hebrew,english";
+    const hasRdToken =
+      config.rdApiToken &&
+      config.rdApiToken.trim().length > 0 &&
+      config.rdApiToken !== "YOUR_REAL_DEBRID_TOKEN_HERE";
+
+    async function probe(_label: string, url: string) {
+      const start = Date.now();
+      try {
+        const r = await axios.get(url, { timeout: 15000, headers: { "User-Agent": "Stremio" } });
+        const streams: unknown[] = r.data?.streams ?? [];
+        return {
+          ok: true,
+          ms: Date.now() - start,
+          count: streams.length,
+          samples: streams.slice(0, 3),
+          url,
+        };
+      } catch (e) {
+        return {
+          ok: false,
+          ms: Date.now() - start,
+          error: e instanceof Error ? e.message : String(e),
+          url,
+        };
+      }
+    }
+
+    const rdConfig = hasRdToken
+      ? `realdebrid=${encodeURIComponent(config.rdApiToken)}%7C${baseConfig}`
+      : null;
+
+    const [withRD, plain] = await Promise.all([
+      rdConfig
+        ? probe("Torrentio+RD", `https://torrentio.strem.fun/${rdConfig}/stream/${type}/${id}.json`)
+        : Promise.resolve({ skipped: true, reason: "No RD token configured" }),
+      probe("Torrentio", `https://torrentio.strem.fun/${baseConfig}/stream/${type}/${id}.json`),
+    ]);
+
+    res.json({
+      query: { type, id },
+      rdTokenPresent: Boolean(hasRdToken),
+      sources: { torrentioWithRD: withRD, torrentioPlain: plain },
+    });
   });
 
   // Stream endpoint (with rate limiting)
