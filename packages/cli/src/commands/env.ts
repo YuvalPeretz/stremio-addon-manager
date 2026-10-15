@@ -86,11 +86,12 @@ export async function envListCommand(options: EnvOptions): Promise<void> {
 
     try {
       // Get current environment variables from service file
-      const currentEnvVars = await serviceManager.getEnvironmentVariables();
+      const currentEnvVars = await serviceManager.getEnvironmentVariables(config);
 
       // Get metadata for all variables
-      const allMetadata = EnvVarManager.getAllEnvVarMetadata();
-      const defaults = EnvVarManager.getDefaultEnvVars();
+      const product = EnvVarManager.getProductFromConfig(config);
+      const allMetadata = EnvVarManager.getAllEnvVarMetadata(product);
+      const defaults = EnvVarManager.getDefaultEnvVars(product);
 
       // Display header
       console.log(
@@ -188,7 +189,7 @@ export async function envGetCommand(key: string, options: EnvOptions): Promise<v
     const serviceManager = new ServiceManager(serviceName, ssh);
 
     try {
-      const envVars = await serviceManager.getEnvironmentVariables();
+      const envVars = await serviceManager.getEnvironmentVariables(config);
       const value = envVars[key];
 
       if (value === undefined) {
@@ -297,7 +298,7 @@ export async function envSetCommand(key: string, value: string, options: EnvOpti
 
     try {
       // Get current environment variables
-      const currentEnvVars = await serviceManager.getEnvironmentVariables();
+      const currentEnvVars = await serviceManager.getEnvironmentVariables(config);
 
       // Update the specific variable
       currentEnvVars[key] = value;
@@ -373,7 +374,7 @@ export async function envUnsetCommand(key: string, options: EnvOptions): Promise
 
     try {
       // Get current environment variables
-      const currentEnvVars = await serviceManager.getEnvironmentVariables();
+      const currentEnvVars = await serviceManager.getEnvironmentVariables(config);
 
       // Remove the variable (will fall back to default/config)
       delete currentEnvVars[key];
@@ -607,7 +608,7 @@ export async function envGenerateCommand(key: string, options: EnvOptions): Prom
 
     try {
       // Get current environment variables
-      const currentEnvVars = await serviceManager.getEnvironmentVariables();
+      const currentEnvVars = await serviceManager.getEnvironmentVariables(config);
 
       // Set the generated value
       currentEnvVars[key] = generatedValue;

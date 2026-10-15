@@ -40,6 +40,7 @@ function formatStepName(step: UpdateStep): string {
     [UpdateStep.UPDATE_CONFIG]: 'Updating configuration',
     [UpdateStep.RESTART_SERVICE]: 'Restarting service',
     [UpdateStep.VERIFY]: 'Verifying update',
+    [UpdateStep.DIAGNOSE]: 'Running diagnostics',
     [UpdateStep.UPDATE_REGISTRY]: 'Updating registry',
     [UpdateStep.CLEANUP]: 'Cleaning up',
     [UpdateStep.COMPLETE]: 'Complete',
@@ -131,16 +132,34 @@ async function updateSingleAddon(addonId: string, options: UpdateOptions): Promi
           `Addon '${addon.name}' updated successfully! (${result.previousVersion} → ${result.newVersion})`
         )
       );
-      
+
       if (result.backupId) {
         console.log(chalk.gray(`Backup created: ${result.backupId}`));
       }
-      
+
       if (result.warnings && result.warnings.length > 0) {
         console.log(chalk.yellow('\n⚠️  Warnings:'));
         result.warnings.forEach((warning: string) => console.log(chalk.yellow(`   - ${warning}`)));
       }
-      
+
+      // Print diagnostics results
+      const diag = result.diagnostics;
+      if (diag) {
+        console.log(chalk.cyan('\n📋 Post-update diagnostics:'));
+        for (const check of diag.checks) {
+          const icon = check.status === 'ok' ? chalk.green('✓') : check.status === 'warning' ? chalk.yellow('⚠') : chalk.red('✗');
+          const msg = check.autoFixed ? `${check.message} ${chalk.gray('(auto-fixed)')}` : check.message;
+          console.log(`   ${icon} ${msg}`);
+        }
+        if (diag.errors > 0) {
+          console.log(chalk.red(`\n   ${diag.errors} error(s) found — the addon may not be working correctly.`));
+        } else if (diag.warnings > 0) {
+          console.log(chalk.yellow(`\n   ${diag.warnings} warning(s) — review the items above.`));
+        } else {
+          console.log(chalk.green('\n   All checks passed.'));
+        }
+      }
+
       console.log(); // Empty line
     } else {
       spinner.fail(chalk.red(`Update failed: ${result.error}`));

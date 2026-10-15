@@ -31,11 +31,93 @@ export interface ElectronAPI {
     get: (addonId: string) => Promise<{ success: boolean; data?: unknown; error?: string }>;
     getDefault: () => Promise<{ success: boolean; data?: unknown; error?: string }>;
     setDefault: (addonId: string) => Promise<{ success: boolean; error?: string }>;
-    create: (name: string, port: number, domain: string) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+    create: (options: {
+      name: string;
+      type?: "classic" | "custom_script";
+      port?: number;
+      domain?: string;
+      publicUrl?: string;
+      managementUrl?: string;
+      product?: "streaming" | "translated_subtitles";
+    }) => Promise<{ success: boolean; data?: unknown; error?: string }>;
     delete: (addonId: string) => Promise<{ success: boolean; error?: string }>;
   };
   install: {
-    start: (options: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+    start: (options: unknown) => Promise<{
+      success: boolean;
+      data?: unknown;
+      error?: string;
+      warning?: string;
+    }>;
+    onProgress: (callback: (progress: unknown) => void) => void;
+    removeProgressListener: () => void;
+  };
+  customScript: {
+    fetchScripts: (
+      managementUrl: string,
+      password: string
+    ) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+    fetchConfig: (
+      managementUrl: string,
+      password: string
+    ) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+    fetchLogs: (
+      managementUrl: string,
+      password: string,
+      lines?: number
+    ) => Promise<{ success: boolean; data?: { lines: string[]; serverTime?: string }; error?: string }>;
+    applyConfig: (
+      addonId: string,
+      options?: { scriptContent?: string; confirmScriptHash?: string; force?: boolean }
+    ) => Promise<{
+      success: boolean;
+      error?: string;
+      warning?: string;
+      requiresConfirm?: boolean;
+      requiresScript?: boolean;
+      scriptHash?: string;
+    }>;
+  };
+  translatedSubtitles: {
+    switchModel: (
+      addonId: string,
+      modelId: string
+    ) => Promise<{
+      success: boolean;
+      error?: string;
+      warning?: string;
+      unreachable?: boolean;
+      attachedSibling?: boolean;
+      modelId?: string;
+      filename?: string;
+      pruned?: string[];
+    }>;
+  };
+  party: {
+    install: (options: { addonId?: string; port?: number; addonUrl: string }) => Promise<{
+      success: boolean;
+      data?: { success: boolean; partyUrl?: string; error?: string };
+      error?: string;
+    }>;
+    status: (addonId?: string) => Promise<{
+      success: boolean;
+      data?: { installed: boolean; active: boolean; port?: number };
+      error?: string;
+    }>;
+    uninstall: (addonId?: string) => Promise<{ success: boolean; error?: string }>;
+    diagnose: (addonId?: string) => Promise<{
+      success: boolean;
+      data?: {
+        nginxConfigPath: string;
+        nginxHasPartyBlocks: boolean;
+        nginxConfigSnippet: string;
+        serviceStatus: string;
+        serviceLogs: string;
+        portReachable: boolean;
+        servicePortEnv?: string;
+      };
+      error?: string;
+    }>;
     onProgress: (callback: (progress: unknown) => void) => void;
     removeProgressListener: () => void;
   };
@@ -58,7 +140,7 @@ export interface ElectronAPI {
     reset: (ssh?: unknown, addonId?: string) => Promise<{ success: boolean; error?: string }>;
     sync: (ssh?: unknown, addonId?: string, restartService?: boolean) => Promise<{ success: boolean; data?: { updated: boolean; changes?: string[] }; error?: string }>;
     generate: (key: string, ssh?: unknown, addonId?: string) => Promise<{ success: boolean; data?: { key: string; value: string }; error?: string }>;
-    getMetadata: () => Promise<{ success: boolean; data?: { metadata: Record<string, unknown>; defaults: Record<string, string> }; error?: string }>;
+    getMetadata: (addonId?: string) => Promise<{ success: boolean; data?: { metadata: Record<string, unknown>; defaults: Record<string, string> }; error?: string }>;
   };
   ssh: {
     test: (sshConfig: unknown) => Promise<{ success: boolean; data?: boolean; error?: string }>;
@@ -82,7 +164,26 @@ export interface ElectronAPI {
   };
   update: {
     check: (addonId?: string) => Promise<{ success: boolean; data?: unknown; error?: string }>;
-    addon: (addonId: string, options?: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+    addon: (
+      addonId: string,
+      options?: {
+        skipBackup?: boolean;
+        restartService?: boolean;
+        forceUpdate?: boolean;
+        force?: boolean;
+        confirmScriptHash?: string;
+        scriptContent?: string;
+        updateScriptContent?: string;
+      }
+    ) => Promise<{
+      success: boolean;
+      data?: unknown;
+      error?: string;
+      warning?: string;
+      requiresConfirm?: boolean;
+      requiresScript?: boolean;
+      scriptHash?: string;
+    }>;
     multiple: (addonIds: string[], options?: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>;
     rollback: (addonId: string, options?: unknown) => Promise<{ success: boolean; data?: unknown; error?: string }>;
     listBackups: (addonId: string) => Promise<{ success: boolean; data?: unknown[]; error?: string }>;

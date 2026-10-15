@@ -1,0 +1,241 @@
+/**
+ * Product env keys and metadata for TranslatedSubtitles.
+ * Consumed by this package and by the installer/Electron agent.
+ */
+
+import type { EnvVarDefinition } from "./types.js";
+
+export const PRODUCT_ID = "translated_subtitles" as const;
+
+export const DEFAULT_TARGET_LANG = "heb";
+export const DEFAULT_PORT = 8080;
+export const DEFAULT_LLM_SERVER_URL = "http://127.0.0.1:8081";
+export const DEFAULT_OPENSUBTITLES_BASE_URL = "https://opensubtitles-v3.strem.io";
+export const DEFAULT_CACHE_TTL_SEC = 2_592_000; // 30 days
+export const DEFAULT_TRANSLATE_BATCH_SIZE = 8;
+export const MIN_TRANSLATE_BATCH_SIZE = 4;
+export const MAX_TRANSLATE_BATCH_SIZE = 12;
+
+export const TRANSLATED_SUBTITLES_ENV_KEYS = [
+  "PORT",
+  "ADDON_PASSWORD",
+  "ADDON_DOMAIN",
+  "ENABLE_MANAGEMENT_API",
+  "NODE_ENV",
+  "TARGET_LANG",
+  "LLM_MODEL_ID",
+  "LLM_MODEL_URL",
+  "LLM_MODEL_FILENAME",
+  "LLM_MODEL_SHA256",
+  "LLM_MODEL_BYTES",
+  "LLM_MODELS_DIR",
+  "LLM_MODEL_PATH",
+  "LLM_SERVER_URL",
+  "LLM_THREADS",
+  "LLM_LLAMA_BIN",
+  "OPENSUBTITLES_BASE_URL",
+  "SUBTITLE_CACHE_DIR",
+  "SUBTITLE_CACHE_TTL_SEC",
+  "TRANSLATION_GLOSSARY",
+  "TRANSLATE_BATCH_SIZE",
+  "ADDON_REQUEST_LOG",
+  "ADDON_SERVER_LOG",
+] as const;
+
+export type TranslatedSubtitlesEnvKey = (typeof TRANSLATED_SUBTITLES_ENV_KEYS)[number];
+
+export const TRANSLATED_SUBTITLES_ENV_DEFINITIONS: readonly EnvVarDefinition[] = [
+  {
+    key: "PORT",
+    description: "Container listen port",
+    default: DEFAULT_PORT,
+    type: "number",
+    required: true,
+    sensitive: false,
+    productOnly: false,
+  },
+  {
+    key: "ADDON_PASSWORD",
+    description: "Password segment in Stremio install URL",
+    type: "string",
+    required: true,
+    sensitive: true,
+    productOnly: false,
+  },
+  {
+    key: "ADDON_DOMAIN",
+    description: "Public host or Gateway path prefix for absolute subtitle URLs",
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: false,
+  },
+  {
+    key: "ENABLE_MANAGEMENT_API",
+    description: "Reserved; public instances stay false",
+    default: false,
+    type: "boolean",
+    required: false,
+    sensitive: false,
+    productOnly: false,
+  },
+  {
+    key: "NODE_ENV",
+    description: "Node.js environment",
+    default: "production",
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: false,
+  },
+  {
+    key: "TARGET_LANG",
+    description: "Single ISO 639-2/3 language emitted to Stremio (e.g. heb, spa)",
+    default: DEFAULT_TARGET_LANG,
+    type: "string",
+    required: true,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "LLM_MODEL_ID",
+    description: "Catalog model id",
+    default: "qwen3-1.7b-q4_k_m",
+    type: "string",
+    required: true,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "LLM_MODEL_URL",
+    description: "Pinned GGUF download URL (defaults from catalog)",
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "LLM_MODEL_FILENAME",
+    description: "GGUF filename in LLM_MODELS_DIR (defaults from catalog)",
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "LLM_MODEL_SHA256",
+    description: "Expected SHA-256 of the GGUF (defaults from catalog)",
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "LLM_MODEL_BYTES",
+    description: "Expected GGUF size in bytes (defaults from catalog)",
+    type: "number",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "LLM_MODELS_DIR",
+    description: "Durable directory for on-demand GGUF downloads",
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "LLM_MODEL_PATH",
+    description: "Offline drop-in path to an existing GGUF (skips download)",
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "LLM_SERVER_URL",
+    description: "llama.cpp HTTP sidecar base URL",
+    default: DEFAULT_LLM_SERVER_URL,
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "LLM_THREADS",
+    description: "CPU threads for llama.cpp (-t). Omit to use sidecar default.",
+    type: "number",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "LLM_LLAMA_BIN",
+    description: "Path to llama-server binary. Falls back to PATH.",
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "OPENSUBTITLES_BASE_URL",
+    description: "OpenSubtitles v3 Stremio addon base (no auth)",
+    default: DEFAULT_OPENSUBTITLES_BASE_URL,
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "SUBTITLE_CACHE_DIR",
+    description: "Disk cache for translated SRT/VTT",
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "SUBTITLE_CACHE_TTL_SEC",
+    description: "Translated-file cache TTL in seconds",
+    default: DEFAULT_CACHE_TTL_SEC,
+    type: "number",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "TRANSLATION_GLOSSARY",
+    description: "Optional Name=Spelling lines (character names, show terms)",
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "TRANSLATE_BATCH_SIZE",
+    description: "Cues per LLM request (clamped 4–12)",
+    default: DEFAULT_TRANSLATE_BATCH_SIZE,
+    type: "number",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "ADDON_REQUEST_LOG",
+    description: "Optional JSONL request log path",
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: false,
+  },
+  {
+    key: "ADDON_SERVER_LOG",
+    description: "Optional server console log path",
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: false,
+  },
+];

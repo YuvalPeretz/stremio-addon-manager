@@ -4,6 +4,7 @@
  */
 
 import { Form, Switch, Button, Flex, Typography, Card, InputNumber, Select, Input } from "antd";
+import type { AddonProduct } from "@stremio-addon-manager/core";
 
 const { Title, Text } = Typography;
 
@@ -12,9 +13,11 @@ interface FeaturesStepProps {
   onChange: (value: any) => void;
   onNext: () => void;
   onBack: () => void;
+  product?: AddonProduct;
 }
 
-function FeaturesStep({ value, onChange, onNext, onBack }: FeaturesStepProps) {
+function FeaturesStep({ value, onChange, onNext, onBack, product = "streaming" }: FeaturesStepProps) {
+  const isTranslated = product === "translated_subtitles";
   const [form] = Form.useForm();
 
   async function handleNext() {
@@ -131,7 +134,9 @@ function FeaturesStep({ value, onChange, onNext, onBack }: FeaturesStepProps) {
               <Flex vertical gap={4}>
                 <Text strong>Caching</Text>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  Cache search results and metadata
+                  {isTranslated
+                    ? "Cache subtitle fetches and translations"
+                    : "Cache search results and metadata"}
                 </Text>
               </Flex>
               <Form.Item name="cachingEnabled" valuePropName="checked" noStyle>
@@ -170,7 +175,14 @@ function FeaturesStep({ value, onChange, onNext, onBack }: FeaturesStepProps) {
               {({ getFieldValue }) =>
                 getFieldValue("rateLimitingEnabled") && (
                   <Flex vertical gap={8}>
-                    <Form.Item label="Stream Requests (per 15 min)" name="rateLimitingStream">
+                    <Form.Item
+                      label={
+                        isTranslated
+                          ? "Subtitle requests (per 15 min)"
+                          : "Stream Requests (per 15 min)"
+                      }
+                      name="rateLimitingStream"
+                    >
                       <InputNumber min={10} max={200} style={{ width: "100%" }} />
                     </Form.Item>
                     <Form.Item label="Stats Requests (per min)" name="rateLimitingStats">

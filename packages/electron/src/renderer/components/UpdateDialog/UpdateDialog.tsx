@@ -24,6 +24,7 @@ export const UpdateDialog: React.FC = () => {
   const [updateInfo, setUpdateInfo] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [completedResult, setCompletedResult] = useState<any>(null);
 
   // Fetch update info when dialog opens
   useEffect(() => {
@@ -98,10 +99,13 @@ export const UpdateDialog: React.FC = () => {
 
       if (result.success) {
         setUpdateResult(result.data);
-        // Close dialog after successful update
-        setTimeout(() => {
-          handleClose();
-        }, 2000);
+        setCompletedResult(result.data);
+        // Only auto-close when there are no diagnostics errors or warnings
+        const diag = result.data?.diagnostics;
+        const hasIssues = diag && (diag.errors > 0 || diag.warnings > 0);
+        if (!hasIssues) {
+          setTimeout(() => handleClose(), 2000);
+        }
       } else {
         setError(result.error || 'Update failed');
       }
@@ -120,6 +124,7 @@ export const UpdateDialog: React.FC = () => {
       setUpdateInfo(null);
       setUpdateProgress(null);
       setError(null);
+      setCompletedResult(null);
     }
   };
 
@@ -127,6 +132,17 @@ export const UpdateDialog: React.FC = () => {
 
   const isUpdating = !!updatingAddon;
   const canUpdate = updateInfo?.updateAvailable && !isUpdating;
+
+  const statusIcon = (status: string) => {
+    if (status === 'ok') return '✓';
+    if (status === 'warning') return '⚠';
+    return '✗';
+  };
+  const statusClass = (status: string) => {
+    if (status === 'ok') return styles.diagOk;
+    if (status === 'warning') return styles.diagWarn;
+    return styles.diagError;
+  };
 
   return (
     <div className={styles.overlay} onClick={handleClose}>
@@ -198,13 +214,13 @@ export const UpdateDialog: React.FC = () => {
               <div className={styles.progressContainer}>
                 <div className={styles.spinner} />
                 <h3>Updating...</h3>
-                
+
                 {updateProgress && (
                   <div className={styles.progressDetails}>
                     <p className={styles.stepMessage}>{updateProgress.message}</p>
                     <div className={styles.progressBar}>
-                      <div 
-                        className={styles.progressFill} 
+                      <div
+                        className={styles.progressFill}
                         style={{ width: `${updateProgress.progress}%` }}
                       />
                     </div>
@@ -221,25 +237,58 @@ export const UpdateDialog: React.FC = () => {
               </div>
             </div>
           )}
+
+          {completedResult && !isUpdating && (
+            <div className={styles.diagnosticsPanel}>
+              <h3>
+                {completedResult.diagnostics?.errors > 0
+                  ? '❌ Update complete — issues found'
+                  : completedResult.diagnostics?.warnings > 0
+                  ? '⚠️ Update complete — warnings'
+                  : '✅ Update complete'}
+              </h3>
+
+              {completedResult.diagnostics?.checks?.length > 0 && (
+                <div className={styles.diagChecks}>
+                  {(completedResult.diagnostics.checks as Array<{ check: string; status: string; message: string; autoFixed?: boolean }>)
+                    .filter((c) => c.status !== 'ok')
+                    .map((c, i) => (
+                      <div key={i} className={`${styles.diagItem} ${statusClass(c.status)}`}>
+                        <span className={styles.diagIcon}>{statusIcon(c.status)}</span>
+                        <span className={styles.diagMsg}>
+                          {c.message}
+                          {c.autoFixed && <em> (auto-fixed)</em>}
+                        </span>
+                      </div>
+                    ))}
+                  {(completedResult.diagnostics.checks as Array<{ status: string }>).filter((c) => c.status !== 'ok').length === 0 && (
+                    <p className={styles.allOk}>All checks passed.</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className={styles.footer}>
-          {!isUpdating && (
+          {!isUpdating && !completedResult && (
             <>
-              <button 
-                className={styles.cancelButton} 
-                onClick={handleClose}
-              >
+              <button className={styles.cancelButton} onClick={handleClose}>
                 Cancel
               </button>
-              <button 
-                className={styles.updateButton} 
+              <button
+                className={styles.updateButton}
                 onClick={handleUpdate}
                 disabled={!canUpdate || loading}
               >
                 Update Now
               </button>
             </>
+          )}
+          {!isUpdating && completedResult && (
+            <button className={styles.cancelButton} onClick={handleClose}>
+              Close
+            </button>
           )}
           {isUpdating && (
             <p className={styles.updatingNote}>Please wait while the addon is being updated...</p>

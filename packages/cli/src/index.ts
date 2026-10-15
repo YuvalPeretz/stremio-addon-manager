@@ -20,6 +20,7 @@ import { uninstallCommand } from "./commands/uninstall.js";
 import { envCommand } from "./commands/env.js";
 import { updateCommand } from "./commands/update.js";
 import { rollbackCommand } from "./commands/rollback.js";
+import { localLibraryExportCommand, localLibraryImportCommand } from "./commands/local-library.js";
 
 const program = new Command();
 
@@ -347,6 +348,31 @@ Generates a secure random value for generateable environment variables. Currentl
 only ADDON_PASSWORD is generateable. The generated value is automatically saved
 and the service file is updated. Use --restart to restart the service.
   `);
+
+/**
+ * Local library — backup / restore library.json on the addon host (see LOCAL_LIBRARY_DATA_DIR).
+ */
+const localLibraryCmd = program
+  .command("local-library")
+  .description("Backup or restore the addon local library (library.json)");
+
+localLibraryCmd
+  .command("export")
+  .description("Download library.json from the addon host")
+  .requiredOption("-o, --output <path>", "Output JSON file path")
+  .option("-a, --addon <id>", "Addon ID")
+  .action(async (opts: { output: string; addon?: string }) => {
+    await localLibraryExportCommand({ output: opts.output, addon: opts.addon });
+  });
+
+localLibraryCmd
+  .command("import")
+  .description("Upload library.json to the addon host (replaces the remote file)")
+  .requiredOption("-f, --file <path>", "Input JSON file path")
+  .option("-a, --addon <id>", "Addon ID")
+  .action(async (opts: { file: string; addon?: string }) => {
+    await localLibraryImportCommand({ file: opts.file, addon: opts.addon });
+  });
 
 /**
  * Parse and execute commands

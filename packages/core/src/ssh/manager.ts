@@ -40,16 +40,21 @@ export class SSHManager implements SSHConnection {
 
       // Read private key from file if path is provided
       let privateKeyContent: string | undefined;
+      let privateKeySource: string | undefined;
       if (this.config.privateKeyPath) {
         try {
           privateKeyContent = await fs.readFile(this.config.privateKeyPath, "utf-8");
+          privateKeySource = this.config.privateKeyPath;
         } catch (error) {
           logger.warn("Failed to read private key from path", { path: this.config.privateKeyPath });
         }
       }
 
-      // Try default SSH key locations if no key provided
-      if (!privateKeyContent && !this.config.password) {
+      // Always try default SSH key locations when no key was loaded.
+      // Important: do this even when a password is set — many hosts (including
+      // hardened Pis) only allow publickey, so password-only auth fails while
+      // ~/.ssh/id_rsa would succeed.
+      if (!privateKeyContent) {
         const homeDir = os.homedir();
         const defaultKeyPaths = [
           path.join(homeDir, ".ssh", "id_rsa"),
@@ -60,6 +65,7 @@ export class SSHManager implements SSHConnection {
         for (const keyPath of defaultKeyPaths) {
           try {
             privateKeyContent = await fs.readFile(keyPath, "utf-8");
+            privateKeySource = keyPath;
             logger.info("Using SSH key from default location", { path: keyPath });
             break;
           } catch {
@@ -68,18 +74,41 @@ export class SSHManager implements SSHConnection {
         }
       }
 
-      await this.ssh.connect({
-        host: this.config.host,
-        port: this.config.port,
-        username: this.config.username,
-        password: this.config.password,
-        privateKey: privateKeyContent,
-        passphrase: this.config.passphrase,
-        tryKeyboard: true,
-      });
+      if (!privateKeyContent && !this.config.password) {
+        throw new Error(
+          "No SSH authentication method available. Provide a password or a private key " +
+            `(e.g. ${path.join(os.homedir(), ".ssh", "id_rsa")}).`
+        );
+      }
+
+      try {
+        await this.ssh.connect({
+          host: this.config.host,
+          port: this.config.port,
+          username: this.config.username,
+          password: this.config.password,
+          privateKey: privateKeyContent,
+          passphrase: this.config.passphrase,
+          tryKeyboard: true,
+        });
+      } catch (connectError) {
+        const msg = (connectError as Error).message || String(connectError);
+        if (/All configured authentication methods failed/i.test(msg)) {
+          const hint = privateKeySource
+            ? `Tried key (${privateKeySource})${this.config.password ? " and password" : ""}.`
+            : this.config.password
+              ? "Password was sent but the host may only allow publickey (PasswordAuthentication no). Set Private Key Path to your id_rsa, or enable password auth on the server."
+              : "No usable private key found and no password was provided.";
+          throw new Error(`${msg} ${hint}`);
+        }
+        throw connectError;
+      }
 
       this.connected = true;
-      logger.info("SSH connection established");
+      logger.info("SSH connection established", {
+        auth: privateKeySource ? "publickey" : "password",
+        key: privateKeySource,
+      });
     } catch (error) {
       this.connected = false;
       logger.error("SSH connection failed", error);

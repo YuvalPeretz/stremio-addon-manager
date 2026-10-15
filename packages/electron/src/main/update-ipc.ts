@@ -16,6 +16,7 @@ import {
   type InstallationProgress,
 } from '@stremio-addon-manager/core';
 import { getUpdateChecker } from './update-checker.js';
+import { isCustomScriptConfig, runCustomScriptUpdate } from './custom-script-ipc.js';
 
 /**
  * Register all update-related IPC handlers
@@ -68,12 +69,33 @@ export function registerUpdateHandlers(): void {
    * Update a specific addon — clean reinstall: removes old addon-server dir, copies fresh
    * bundled files, npm installs, and restarts the service. Config and env vars are preserved.
    */
-  ipcMain.handle('update:addon', async (_event, addonId: string, _options: UpdateOptions = {}) => {
+  ipcMain.handle('update:addon', async (_event, addonId: string, options: UpdateOptions & {
+    confirmScriptHash?: string;
+    force?: boolean;
+    scriptContent?: string;
+    updateScriptContent?: string;
+  } = {}) => {
     try {
-      logger.info('Starting clean addon reinstall via IPC', { addonId });
+      logger.info('Starting addon update via IPC', { addonId });
 
       const configManager = new ConfigManager(addonId);
       const config = await configManager.load();
+
+      if (isCustomScriptConfig(config)) {
+        const result = await runCustomScriptUpdate(addonId, {
+          confirmScriptHash: options.confirmScriptHash,
+          force: Boolean(options.force) || Boolean(options.forceUpdate),
+          scriptContent: options.scriptContent,
+          updateScriptContent: options.updateScriptContent,
+        });
+        logger.info('Custom script update completed via IPC', {
+          addonId,
+          success: result.success,
+          requiresConfirm: result.requiresConfirm,
+          warning: result.warning,
+        });
+        return result;
+      }
 
       const progressCallback = (progress: InstallationProgress) => {
         const window = BrowserWindow.getAllWindows()[0];
@@ -97,16 +119,73 @@ export function registerUpdateHandlers(): void {
   /**
    * Update multiple addons
    */
-  ipcMain.handle('update:multiple', async (_event, addonIds: string[], options: UpdateOptions = {}) => {
+  ipcMain.handle('update:multiple', async (_event, addonIds: string[], options: UpdateOptions & { force?: boolean } = {}) => {
     try {
       logger.info('Starting multiple addon updates via IPC', { addonIds, options });
 
       const results = [];
+      const forceScript =
+        Boolean(options.forceUpdate) || Boolean(options.force);
 
       for (const addonId of addonIds) {
         try {
           const configManager = new ConfigManager(addonId);
           const config = await configManager.load();
+
+          if (isCustomScriptConfig(config)) {
+            let csResult = await runCustomScriptUpdate(addonId, {
+              force: forceScript,
+            });
+            // Force Update All is an explicit batch confirm — re-run with hash ack.
+            // Non-force Update All still fails so the user can confirm per-addon.
+            if (csResult.requiresConfirm && forceScript && csResult.scriptHash) {
+              csResult = await runCustomScriptUpdate(addonId, {
+                force: true,
+                confirmScriptHash: csResult.scriptHash,
+              });
+            }
+            if (csResult.requiresScript) {
+              results.push({
+                success: false,
+                addonId,
+                previousVersion: '0.0.0',
+                newVersion: '0.0.0',
+                duration: 0,
+                error:
+                  csResult.error ||
+                  'managementUrl unreachable and no stored script — open Updates and paste/pick the deploy script for this addon.',
+                changes: [],
+                steps: [],
+              });
+              continue;
+            }
+            if (csResult.requiresConfirm) {
+              results.push({
+                success: false,
+                addonId,
+                previousVersion: '0.0.0',
+                newVersion: '0.0.0',
+                duration: 0,
+                error:
+                  csResult.error ||
+                  'Deploy script hash changed — open Updates and confirm Force Update for this addon.',
+                changes: [],
+                steps: [],
+              });
+              continue;
+            }
+            results.push({
+              success: csResult.success,
+              addonId,
+              previousVersion: '0.0.0',
+              newVersion: '0.0.0',
+              duration: csResult.data?.durationMs ?? 0,
+              error: csResult.error,
+              changes: [],
+              steps: csResult.data?.steps ?? [],
+            });
+            continue;
+          }
 
           let ssh: SSHManager | undefined;
           if (config.installation.type === 'remote' && config.installation.target) {
@@ -177,6 +256,14 @@ export function registerUpdateHandlers(): void {
 
       const configManager = new ConfigManager(addonId);
       const config = await configManager.load();
+
+      if (isCustomScriptConfig(config)) {
+        return {
+          success: false,
+          error:
+            'Rollback is not supported for custom_script installs. Use your Gateway/script recovery process.',
+        };
+      }
 
       let ssh: SSHManager | undefined;
       if (config.installation.type === 'remote' && config.installation.target) {

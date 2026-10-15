@@ -14,8 +14,13 @@ export interface TorrentInfo {
    * Real-Debrid processing and select the file directly.
    */
   fileIdx?: number;
-  /** Source that produced this result, for logging */
+  /**
+   * Discovery source label, e.g. Torrentio/Q (quality-sorted fetch) or Torrentio/S (seeder-sorted).
+   * Used for Stremio list ordering and stream name prefixes.
+   */
   source?: string;
+  /** From RD instantAvailability; higher = stronger cache signal on RD (sorting only). */
+  rdCacheScore?: number;
 }
 
 export interface Subtitle {
@@ -28,6 +33,12 @@ export interface Stream {
   name: string;
   title: string;
   url: string;
+  /** Set for RD streams; stripped before JSON to Stremio (used for request log + cache invalidation). */
+  infoHash?: string;
+  /** Present when resolved from a Torrentio discovery tier — used to sort Q before S in the picker */
+  discoveryTier?: "local" | "quality" | "seeders";
+  /** Stronger RD instantAvailability payload sorts higher among RD streams. */
+  rdCacheScore?: number;
   subtitles?: Subtitle[];
   behaviorHints?: {
     bingeGroup?: string;
@@ -37,6 +48,11 @@ export interface Stream {
 
 export interface StreamResponse {
   streams: Stream[];
+  /**
+   * Cinemeta catalog title (show/movie). For server request logging and management search only;
+   * never sent to Stremio (stripped in JSON helpers that only pass `streams`).
+   */
+  logContext?: { showName: string | null };
 }
 
 export interface CinemetaMetadata {
@@ -95,3 +111,17 @@ export interface RealDebridUnrestrictResponse {
   download: string;
   [key: string]: unknown;
 }
+
+export interface PendingDownload {
+  torrentId: string;
+  infoHash: string;
+  fileIdx?: number;
+  seasonEpisode?: { season: number; episode: number } | null;
+  addedAt: number;
+}
+
+export type ProcessRDResult =
+  | { kind: "stream"; url: string; title: string }
+  | { kind: "pending"; torrentId: string }
+  | { kind: "dmca" }
+  | { kind: "null" };

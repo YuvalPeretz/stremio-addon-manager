@@ -13,7 +13,8 @@ import { OSDetector } from '../os/detector.js';
 import { SSHManager } from '../ssh/manager.js';
 import { ServiceManager } from '../service/manager.js';
 import { OperatingSystem, LinuxDistribution } from '../types/common.js';
-import { AddonRegistryManager, generateServiceName, ConfigManager, EnvVarManager } from '../config/index.js';
+import { AddonRegistryManager, generateServiceName, ConfigManager, EnvVarManager, normalizeAddonProduct, productPackageDir } from '../config/index.js';
+import { resolveBundledProductPath } from './bundled-paths.js';
 import { ServiceFileManager } from '../service/file-manager.js';
 import type {
   InstallationOptions,
@@ -534,6 +535,8 @@ export class InstallationManager {
       host: target.host || '',
       port: target.port || 22,
       username: target.username || '',
+      password: target.password,
+      privateKeyPath: target.privateKeyPath,
     });
 
     await this.ssh.connect();
@@ -806,235 +809,30 @@ findtime = 600
     
     // Get bundled addon-server path
     const bundledPath = await this.getBundledAddonServerPath();
+    const product = normalizeAddonProduct(this.options.config.product);
+    const packageDir = productPackageDir(product);
     if (!bundledPath) {
       throw new Error(
-        'Bundled addon-server not found. ' +
+        `Bundled ${packageDir} not found. ` +
         'Make sure you run "npm run build" to bundle the packages before installation. ' +
-        'The addon-server package should be in the resources/ directory.'
+        `The ${packageDir} package should be in the resources/ directory.`
       );
     }
     
-    logger.info('Using bundled addon-server', { bundledPath, targetDir });
+    logger.info('Using bundled product package', { product, packageDir, bundledPath, targetDir });
     await this.copyBundledAddonServer(bundledPath, targetDir);
   }
 
   /**
-   * Get path to bundled addon-server if available
-   * Checks paths in priority order: Electron resources -> CLI resources -> monorepo
-   * 
-   * Option 2 Structure:
-   * - Electron: resources/cli/resources/addon-server (CLI bundled in Electron)
-   * - CLI: resources/addon-server (addon-server bundled in CLI)
-   * - Monorepo: packages/addon-server (development)
+   * Get path to bundled product package (addon-server or translated-subtitles).
    */
   private async getBundledAddonServerPath(): Promise<string | null> {
-    // Detect execution context for better logging
-    const executionContext = this.detectExecutionContext();
-    logger.debug('Detected execution context for addon-server path resolution', { executionContext });
-    
-    // Get base paths for resolution
-    // Use __dirname (core package location) as reference point for relative paths
-    const corePackageDir = __dirname; // This is core/dist/installation/manager.js location
-    const coreDistDir = path.dirname(corePackageDir); // core/dist/installation -> core/dist
-    const coreRootDir = path.dirname(coreDistDir); // core/dist -> core
-    const packagesDir = path.dirname(coreRootDir); // core -> packages
-    
-    // Define paths in priority order (as specified in Phase 3.1)
-    const pathChecks: Array<{ path: string; description: string; context: string }> = [];
-    
-    // 1. Electron packaged: Check environment variables first (set by Electron main process)
-    if (process.env.ELECTRON_RESOURCES_PATH) {
-      const resourcesPath = process.env.ELECTRON_RESOURCES_PATH;
-      pathChecks.push({
-        path: path.join(resourcesPath, 'cli', 'resources', 'addon-server'),
-        description: 'Electron packaged (from env, Option 2)',
-        context: 'Electron (packaged from env)'
-      });
-      // Also check legacy location
-      pathChecks.push({
-        path: path.join(resourcesPath, 'addon-server'),
-        description: 'Electron packaged (from env, legacy)',
-        context: 'Electron (legacy packaged from env)'
-      });
-    }
-    
-    // 2. Electron packaged: process.resourcesPath + '/cli/resources/addon-server'
-    if (typeof (process as any).resourcesPath !== 'undefined') {
-      const resourcesPath = (process as any).resourcesPath;
-      pathChecks.push({
-        path: path.join(resourcesPath, 'cli', 'resources', 'addon-server'),
-        description: 'Electron packaged (Option 2)',
-        context: 'Electron (packaged)'
-      });
-      // Also check legacy location
-      pathChecks.push({
-        path: path.join(resourcesPath, 'addon-server'),
-        description: 'Electron packaged (legacy)',
-        context: 'Electron (legacy packaged)'
-      });
-    }
-    
-    // 3. Electron dev: Check from ELECTRON_APP_PATH environment variable
-    if (process.env.ELECTRON_APP_PATH) {
-      const appPath = process.env.ELECTRON_APP_PATH;
-      pathChecks.push({
-        path: path.join(appPath, 'resources', 'cli', 'resources', 'addon-server'),
-        description: 'Electron dev (from env, Option 2)',
-        context: 'Electron (dev from env)'
-      });
-      pathChecks.push({
-        path: path.join(appPath, 'resources', 'addon-server'),
-        description: 'Electron dev (from env, legacy)',
-        context: 'Electron (dev from env, legacy)'
-      });
-    }
-    
-    // 4. Electron dev: Check relative to core package location
-    // When core is bundled in Electron, it's at: electron/dist/node_modules/@stremio-addon-manager/core/dist/...
-    // So we need to go up to find electron/resources/
-    // Try: core -> node_modules -> electron -> resources
-    const electronResourcesFromCore = path.join(coreRootDir, '..', '..', 'electron', 'resources', 'cli', 'resources', 'addon-server');
-    pathChecks.push({
-      path: electronResourcesFromCore,
-      description: 'Electron dev (from core, Option 2)',
-      context: 'Electron (dev from core)'
+    const product = normalizeAddonProduct(this.options.config.product);
+    logger.debug('Resolving bundled product path', {
+      product,
+      executionContext: this.detectExecutionContext(),
     });
-    
-    // 5. Electron dev: Check from process.cwd() (fallback for different execution contexts)
-    pathChecks.push({
-      path: path.join(process.cwd(), 'resources', 'cli', 'resources', 'addon-server'),
-      description: 'Electron dev (from cwd, Option 2)',
-      context: 'Electron (dev from cwd)'
-    });
-    
-    // 4. Electron direct: resources/addon-server (legacy fallback)
-    pathChecks.push({
-      path: path.join(process.cwd(), 'resources', 'addon-server'),
-      description: 'Electron direct (legacy fallback)',
-      context: 'Electron (legacy)'
-    });
-    
-    // 5. CLI packaged: resources/addon-server (CLI's own resources)
-    // When core is bundled in CLI, it's at: cli/resources/core/dist/...
-    // So we need to go up to find cli/resources/addon-server
-    const cliResourcesFromCore = path.join(coreRootDir, '..', 'addon-server');
-    pathChecks.push({
-      path: cliResourcesFromCore,
-      description: 'CLI packaged (from core)',
-      context: 'CLI (packaged from core)'
-    });
-    
-    // 6. CLI packaged: Check from process.cwd()
-    pathChecks.push({
-      path: path.join(process.cwd(), 'resources', 'addon-server'),
-      description: 'CLI packaged (from cwd)',
-      context: 'CLI (packaged from cwd)'
-    });
-    
-    // 7. CLI dev: Check relative to core package (monorepo structure)
-    // core -> packages -> cli -> resources -> addon-server
-    const cliDevFromCore = path.join(packagesDir, 'cli', 'resources', 'addon-server');
-    pathChecks.push({
-      path: cliDevFromCore,
-      description: 'CLI dev (from core, monorepo)',
-      context: 'CLI (dev from core)'
-    });
-    
-    // 8. CLI dev: Check from process.cwd()
-    pathChecks.push({
-      path: path.join(process.cwd(), '..', 'cli', 'resources', 'addon-server'),
-      description: 'CLI dev (from cwd, monorepo)',
-      context: 'CLI (dev from cwd)'
-    });
-    
-    // 9. Monorepo: packages/addon-server (development)
-    const monorepoAddonServer = path.join(packagesDir, 'addon-server');
-    pathChecks.push({
-      path: monorepoAddonServer,
-      description: 'Monorepo (from core)',
-      context: 'Monorepo (from core)'
-    });
-    pathChecks.push({
-      path: path.join(process.cwd(), 'packages', 'addon-server'),
-      description: 'Monorepo (from cwd)',
-      context: 'Monorepo (from cwd)'
-    });
-    
-    // 10. Additional fallbacks for Electron package in monorepo
-    const electronMonorepoPath = path.join(packagesDir, 'electron', 'resources', 'cli', 'resources', 'addon-server');
-    pathChecks.push({
-      path: electronMonorepoPath,
-      description: 'Electron package in monorepo (from core, Option 2)',
-      context: 'Electron (monorepo from core)'
-    });
-    pathChecks.push({
-      path: path.join(process.cwd(), 'packages', 'electron', 'resources', 'cli', 'resources', 'addon-server'),
-      description: 'Electron package in monorepo (from cwd, Option 2)',
-      context: 'Electron (monorepo from cwd)'
-    });
-
-    logger.debug('Checking for bundled addon-server', { 
-      totalPaths: pathChecks.length,
-      executionContext,
-      cwd: process.cwd(),
-      electronAppPath: process.env.ELECTRON_APP_PATH,
-      electronResourcesPath: process.env.ELECTRON_RESOURCES_PATH,
-      processResourcesPath: typeof (process as any).resourcesPath !== 'undefined' ? (process as any).resourcesPath : undefined,
-      corePackageDir,
-      coreRootDir,
-      packagesDir
-    });
-    
-    for (const check of pathChecks) {
-      try {
-        // Resolve to absolute path for better logging
-        const absolutePath = path.isAbsolute(check.path) ? check.path : path.resolve(check.path);
-        logger.debug(`Checking path: ${check.description}`, { 
-          path: check.path,
-          absolutePath,
-          context: check.context
-        });
-        const packageJsonPath = path.join(check.path, 'package.json');
-        const distPath = path.join(check.path, 'dist');
-        
-        // Check if both package.json and dist exist
-        // Bundled resources are always on local machine, so force local check
-        const packageExists = await this.checkPathExists(packageJsonPath, true);
-        const distExists = await this.checkPathExists(distPath, true);
-        
-        if (packageExists && distExists) {
-          logger.info('Found bundled addon-server', { 
-            path: check.path,
-            absolutePath,
-            context: check.context,
-            description: check.description
-          });
-          return check.path;
-        } else {
-          logger.debug(`Path not found: ${check.description}`, { 
-            path: check.path,
-            absolutePath,
-            packageExists,
-            distExists
-          });
-        }
-      } catch (error) {
-        // Continue checking other paths
-        logger.debug(`Path check failed: ${check.description}`, { 
-          path: check.path, 
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-    }
-    
-    logger.warn('Bundled addon-server not found in any expected location', {
-      checkedPaths: pathChecks.length,
-      executionContext,
-      cwd: process.cwd(),
-      electronAppPath: process.env.ELECTRON_APP_PATH,
-      electronResourcesPath: process.env.ELECTRON_RESOURCES_PATH
-    });
-    return null;
+    return resolveBundledProductPath(product, 'built');
   }
 
   /**
@@ -1716,6 +1514,54 @@ server {
         proxy_send_timeout 300s;
     }
 
+    # Management UI + POST /remake (stream pipeline; same budget as stream JSON)
+    location ~ ^/[^/]+/management(/|$) {
+        proxy_pass http://localhost:${port};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_connect_timeout 75s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    # Local library API (disk I/O listing dirs can exceed 10s on a Pi; was causing HTTP 504 via catch-all)
+    # Matches /local-library/... and /:password/local-library/...
+    location ~ ^/(?:[^/]+/)?local-library(/|$) {
+        proxy_pass http://localhost:${port};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_connect_timeout 75s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    # Video proxy — long-lived byte streaming from Real-Debrid CDN.
+    # Needs its own location because video streams can last hours and must not
+    # be subject to the catch-all's shorter timeouts or Nginx response buffering.
+    location ~ ^/([^/]+)/proxy$ {
+        proxy_pass http://localhost:${port}/$1/proxy$is_args$args;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+
+        proxy_buffering off;
+
+        proxy_connect_timeout 75s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
     # Catch-all: proxy all other paths to backend
     location / {
         proxy_pass http://localhost:${port};
@@ -1726,9 +1572,10 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-Host $host;
         
-        # Error handling for backend connection failures
-        proxy_connect_timeout 5s;
-        proxy_read_timeout 10s;
+        # Allow slow JSON/API responses (reindex, heavy endpoints); 10s caused frequent 504s
+        proxy_connect_timeout 75s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
     }
 }
 `;
@@ -1772,14 +1619,14 @@ server {
       
       logger.debug('Checking for certificate files directly', { certDir, certPath, keyPath });
       
-      const certFileExists = await this.execCommand(`test -f "${certPath}" && echo "EXISTS" || echo "MISSING"`);
-      const keyFileExists = await this.execCommand(`test -f "${keyPath}" && echo "EXISTS" || echo "MISSING"`);
+      const certFileExists = await this.execSudo(`test -f "${certPath}" && echo "EXISTS" || echo "MISSING"`);
+      const keyFileExists = await this.execSudo(`test -f "${keyPath}" && echo "EXISTS" || echo "MISSING"`);
       
       if (!certFileExists.stdout.includes('MISSING') && !keyFileExists.stdout.includes('MISSING')) {
         logger.info('Found certificate files directly in filesystem', { certPath, keyPath });
         
         // Verify certificate is valid by checking expiry date using openssl
-        const certInfoResult = await this.execCommand(`openssl x509 -in "${certPath}" -noout -dates -subject 2>&1`);
+        const certInfoResult = await this.execSudo(`openssl x509 -in "${certPath}" -noout -dates -subject 2>&1`);
         
         if (certInfoResult.code === 0) {
           // Parse expiry date from openssl output
@@ -1948,9 +1795,9 @@ server {
       const certificatePath = certPathMatch[1].trim();
       const privateKeyPath = keyPathMatch[1].trim();
 
-      // Verify certificate files exist
-      const certExists = await this.execCommand(`test -f "${certificatePath}" && echo "EXISTS" || echo "MISSING"`);
-      const keyExists = await this.execCommand(`test -f "${privateKeyPath}" && echo "EXISTS" || echo "MISSING"`);
+      // Verify certificate files exist (sudo required — /etc/letsencrypt/live/ is root-only)
+      const certExists = await this.execSudo(`test -f "${certificatePath}" && echo "EXISTS" || echo "MISSING"`);
+      const keyExists = await this.execSudo(`test -f "${privateKeyPath}" && echo "EXISTS" || echo "MISSING"`);
 
       if (certExists.stdout.includes('MISSING') || keyExists.stdout.includes('MISSING')) {
         logger.warn('Certificate files are missing', {
@@ -2078,10 +1925,11 @@ server {
       existingConfig = configContentResult.stdout;
     }
 
-    // Check if config already has SSL configured
+    // Always regenerate the full nginx config even when SSL is already present.
+    // Template changes (new location blocks, updated timeouts, proxy_buffering)
+    // must be picked up on every reinstall/update.
     if (existingConfig.includes('listen 443') && existingConfig.includes(certificatePath)) {
-      logger.info('Nginx config already has SSL configured with this certificate', { domain });
-      return;
+      logger.info('Nginx config already has SSL — regenerating to apply latest template', { domain });
     }
 
     // Build complete Nginx config with SSL
@@ -2206,6 +2054,53 @@ server {
         proxy_send_timeout 300s;
     }
 
+    # Management UI + POST /remake (stream pipeline; same budget as stream JSON)
+    location ~ ^/[^/]+/management(/|$) {
+        proxy_pass http://localhost:${port};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_connect_timeout 75s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    # Local library API (disk I/O listing dirs can exceed 10s on a Pi; was causing HTTP 504 via catch-all)
+    location ~ ^/(?:[^/]+/)?local-library(/|$) {
+        proxy_pass http://localhost:${port};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_connect_timeout 75s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    # Video proxy — long-lived byte streaming from Real-Debrid CDN.
+    # Needs its own location because video streams can last hours and must not
+    # be subject to the catch-all's shorter timeouts or Nginx response buffering.
+    location ~ ^/([^/]+)/proxy$ {
+        proxy_pass http://localhost:${port}/$1/proxy$is_args$args;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+
+        proxy_buffering off;
+
+        proxy_connect_timeout 75s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
     # Catch-all: proxy all other paths to backend
     location / {
         proxy_pass http://localhost:${port};
@@ -2216,9 +2111,9 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-Host $host;
         
-        # Error handling for backend connection failures
-        proxy_connect_timeout 5s;
-        proxy_read_timeout 10s;
+        proxy_connect_timeout 75s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
     }
 }
 `;
@@ -2488,7 +2383,32 @@ server {
         tokenPrefix: rdToken.substring(0, 4) + '...',
       });
     }
-    
+
+    const explicitLib = this.options.config.paths.localLibraryDataDir;
+    let localLibraryDir: string | null = null;
+    if (explicitLib !== undefined && String(explicitLib).trim() === "") {
+      localLibraryDir = null;
+    } else {
+      const dir = (explicitLib?.trim() || path.posix.join(targetDir, "local-library")).replace(/\/+$/, "");
+      localLibraryDir = dir || null;
+    }
+    const localLibraryEnvBlock = localLibraryDir
+      ? `Environment=LOCAL_LIBRARY_DATA_DIR=${localLibraryDir}\n`
+      : "";
+
+    // Provider env vars (only emit non-default values to keep service file readable)
+    const torboxToken = this.options.config.secrets.torboxToken?.trim() || '';
+    const torboxEnvBlock = torboxToken ? `Environment=TORBOX_API_TOKEN=${torboxToken}\n` : '';
+    const streamProviderOrder = this.options.config.addon.streamProviderOrder;
+    const streamProviderOrderStr = Array.isArray(streamProviderOrder) ? streamProviderOrder.join(',') : (streamProviderOrder as string | undefined) || '';
+    const providerOrderEnvBlock = streamProviderOrderStr && streamProviderOrderStr !== 'real-debrid'
+      ? `Environment=STREAM_PROVIDER_ORDER=${streamProviderOrderStr}\n`
+      : '';
+    const streamProviderMode = this.options.config.addon.streamProviderMode;
+    const providerModeEnvBlock = streamProviderMode && streamProviderMode !== 'parallel'
+      ? `Environment=STREAM_PROVIDER_MODE=${streamProviderMode}\n`
+      : '';
+
     const serviceConfig = `
 [Unit]
 Description=Stremio Private Addon: ${addonName}
@@ -2509,10 +2429,11 @@ Environment=RD_API_TOKEN=${rdToken}
 Environment=ADDON_PASSWORD=${this.options.config.addon.password}
 Environment=ADDON_DOMAIN=${domain}
 Environment=TORRENT_LIMIT=${this.options.config.addon.torrentLimit}
+Environment=ENABLE_MANAGEMENT_API=true
 ${this.options.config.addon.availabilityCheckLimit ? `Environment=AVAILABILITY_CHECK_LIMIT=${this.options.config.addon.availabilityCheckLimit}` : ''}
 ${this.options.config.addon.maxStreams ? `Environment=MAX_STREAMS=${this.options.config.addon.maxStreams}` : ''}
 ${this.options.config.addon.maxConcurrency ? `Environment=MAX_CONCURRENCY=${this.options.config.addon.maxConcurrency}` : ''}
-
+${localLibraryEnvBlock}${torboxEnvBlock}${providerOrderEnvBlock}${providerModeEnvBlock}
 [Install]
 WantedBy=multi-user.target
 `;
@@ -2556,6 +2477,17 @@ WantedBy=multi-user.target
       throw new Error(`Service file was not created at ${servicePath}. Check permissions and disk space.`);
     }
     logger.info('Service file created and verified', { servicePath });
+
+    if (localLibraryDir) {
+      logger.info('Creating local library data directory', { localLibraryDir });
+      const mkdirLib = await this.execSudo(`mkdir -p ${localLibraryDir}`);
+      if (mkdirLib.code !== 0) {
+        logger.warn('Failed to mkdir local library data dir (non-fatal)', {
+          localLibraryDir,
+          stderr: mkdirLib.stderr,
+        });
+      }
+    }
 
     // Reload systemd daemon to recognize the new service
     logger.info('Reloading systemd daemon', { serviceName });
@@ -2672,10 +2604,20 @@ WantedBy=multi-user.target
   }
 
   /**
-   * Configure DuckDNS cron job only (assumes immediate update was already done)
+   * Configure DuckDNS cron job + on-host maintenance watchdog.
+   *
+   * The generated ~/duckdns/duck.sh script runs every 5 minutes and:
+   *   1. Updates DuckDNS with the Pi's current public IP.
+   *   2. Restarts the addon service if it has stopped.
+   *   3. Restarts nginx if it has stopped.
+   *
+   * The script is written to ~/duckdns/duck.sh (consistent path that overwrites
+   * any legacy script at a different location).  The crontab is deduplicated so
+   * only one entry for this script ever exists, preventing the "both old and new
+   * script run" problem that arises when the function is called more than once.
    */
   private async configureDuckDNSCronJob(): Promise<void> {
-    logger.info('Setting up DuckDNS cron job for periodic IP updates');
+    logger.info('Setting up DuckDNS cron job and on-host maintenance watchdog');
 
     const duckdnsToken = this.options.config.secrets.duckdnsToken;
     if (!duckdnsToken) {
@@ -2684,19 +2626,58 @@ WantedBy=multi-user.target
     }
 
     const domain = this.options.config.addon.domain.replace('.duckdns.org', '');
+    const serviceName = this.options.config.serviceName ?? `stremio-addon-${this.options.config.addon.name ?? 'default'}`;
+    const scriptDir = '~/duckdns';
+    const scriptPath = `${scriptDir}/duck.sh`;
+    const duckLogPath = `${scriptDir}/duck.log`;
+    const maintLogPath = `${scriptDir}/maintenance.log`;
 
-    // Create update script for cron job
-    const updateScript = `#!/bin/bash
-echo url="https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}&ip=" | curl -k -o ~/duckdns.log -K -
-`;
+    // Build the maintenance script.  Domain, token, and service name are
+    // interpolated now (TypeScript); $(date ...) and systemctl calls are
+    // preserved as-is for runtime execution on the Pi.
+    const maintenanceScript = [
+      '#!/bin/bash',
+      '# Stremio Addon Maintenance Script — auto-generated, do not edit manually.',
+      '# Managed by stremio-addon-manager. Runs every 5 minutes via cron.',
+      '',
+      '# ── 1. Update DuckDNS with current public IP ──────────────────────────',
+      `curl -k "https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}&ip=" -o ${duckLogPath} 2>&1`,
+      '',
+      '# ── 2. Rotate maintenance log if > 500 KB ─────────────────────────────',
+      `if [ -f ${maintLogPath} ] && [ "$(wc -c < ${maintLogPath})" -gt 512000 ]; then`,
+      `  tail -n 200 ${maintLogPath} > ${maintLogPath}.tmp && mv ${maintLogPath}.tmp ${maintLogPath}`,
+      'fi',
+      '',
+      '# ── 3. Ensure addon service is running ────────────────────────────────',
+      `if ! systemctl is-active --quiet ${serviceName}; then`,
+      `  echo "$(date '+%Y-%m-%d %H:%M:%S') [watchdog] ${serviceName} not active — restarting" >> ${maintLogPath}`,
+      `  sudo systemctl start ${serviceName} >> ${maintLogPath} 2>&1`,
+      'fi',
+      '',
+      '# ── 4. Ensure nginx is running ────────────────────────────────────────',
+      'if ! systemctl is-active --quiet nginx; then',
+      `  echo "$(date '+%Y-%m-%d %H:%M:%S') [watchdog] nginx not active — restarting" >> ${maintLogPath}`,
+      `  sudo systemctl start nginx >> ${maintLogPath} 2>&1`,
+      'fi',
+    ].join('\n');
 
-    await this.execCommand('echo \'' + updateScript + '\' > ~/duckdns.sh');
-    await this.execCommand('chmod +x ~/duckdns.sh');
+    // Ensure the directory exists, then write the script via heredoc.
+    // The heredoc delimiter is single-quoted ('MAINT_EOF') so the shell does NOT
+    // interpret the $(date ...) calls during write — they are preserved literally
+    // in the script file and executed at runtime when cron fires.
+    await this.execCommand(`mkdir -p ${scriptDir}`);
+    await this.execCommand(`cat > ${scriptPath} << 'MAINT_EOF'\n${maintenanceScript}\nMAINT_EOF`);
+    await this.execCommand(`chmod +x ${scriptPath}`);
 
-    // Add to crontab (run every 5 minutes)
-    await this.execCommand('(crontab -l 2>/dev/null; echo "*/5 * * * * ~/duckdns.sh >/dev/null 2>&1") | crontab -');
+    // Deduplicate crontab: remove every existing entry that references duck or
+    // duckdns (covers legacy ~/duckdns.sh, ~/duckdns/duck.sh, and full paths
+    // like /home/user/duckdns/duck.sh), then add exactly one entry for the new
+    // script path.
+    await this.execCommand(
+      `(crontab -l 2>/dev/null | grep -Ev 'duck|duckdns'; echo "*/5 * * * * ${scriptPath} >/dev/null 2>&1") | crontab -`
+    );
 
-    logger.info('DuckDNS cron job configured (runs every 5 minutes)');
+    logger.info('DuckDNS + maintenance cron configured (runs every 5 minutes)', { domain, serviceName, scriptPath });
   }
 
   /**
@@ -2937,6 +2918,7 @@ echo url="https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}
         serviceName,
         port,
         domain,
+        product: normalizeAddonProduct(this.options.config.product),
       });
 
       // Save registry
@@ -3325,10 +3307,36 @@ WantedBy=multi-user.target
       if (npmResult.code !== 0) {
         return { success: false, error: `npm install failed: ${npmResult.stderr}` };
       }
-      report('install_dependencies', 'Dependencies installed', 80);
+      report('install_dependencies', 'Dependencies installed', 75);
 
-      // Step 4: Restart the service
-      report('start_service', 'Starting addon service...', 85);
+      // Step 4: Regenerate the nginx *config file* to pick up new location blocks,
+      // timeout changes, etc.  This does NOT issue or renew SSL certificates — it
+      // only rewrites the text config and reuses the existing cert on disk.
+      report('setup_nginx' as InstallationStep, 'Updating nginx configuration...', 78);
+      try {
+        await this.setupNginx();
+        report('setup_nginx' as InstallationStep, 'Nginx updated', 83);
+      } catch (nginxErr) {
+        logger.warn('Nginx update failed during reinstall — streaming may use stale timeouts', {
+          error: (nginxErr as Error).message,
+        });
+        report('setup_nginx' as InstallationStep, 'Nginx update skipped (non-fatal)', 83);
+      }
+
+      // Step 5: Regenerate the systemd service file so env-var changes
+      // (port, LOCAL_LIBRARY_DATA_DIR, tokens, etc.) are picked up.
+      report('create_service' as InstallationStep, 'Updating service file...', 85);
+      try {
+        await this.updateServiceFile({ restartService: false });
+        report('create_service' as InstallationStep, 'Service file updated', 88);
+      } catch (svcErr) {
+        logger.warn('Service file update failed during reinstall — using existing service file', {
+          error: (svcErr as Error).message,
+        });
+      }
+
+      // Step 6: Restart the service
+      report('start_service', 'Starting addon service...', 90);
       await this.execSudo(`systemctl restart ${serviceName}`);
       report('start_service', 'Service restarted', 95);
 

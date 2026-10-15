@@ -560,7 +560,9 @@ export class ServiceManager {
 
       switch (this.os) {
         case OperatingSystem.LINUX:
-          command = follow ? `journalctl -u ${this.serviceName} -f` : `journalctl -u ${this.serviceName} -n ${lines}`;
+          command = follow
+            ? `journalctl -u ${this.serviceName} -f --no-pager`
+            : `journalctl -u ${this.serviceName} -n ${lines} --no-pager`;
           break;
         case OperatingSystem.MACOS:
           // macOS logs are in a file specified in the plist
@@ -575,7 +577,14 @@ export class ServiceManager {
       }
 
       const result = await this.executeSudoCommand(command);
-      return result.stdout;
+
+      if (result.code !== 0 && result.stdout.trim() === "") {
+        const errDetail = result.stderr.trim() || `exit code ${result.code}`;
+        throw new Error(`journalctl returned an error: ${errDetail}`);
+      }
+
+      // journalctl occasionally writes warnings to stderr; prefer stdout, fall back to stderr
+      return result.stdout.trim() !== "" ? result.stdout : result.stderr;
     } catch (error) {
       logger.error("Failed to get service logs", { service: this.serviceName, error });
       throw new Error(`Failed to get service logs: ${(error as Error).message}`);
@@ -664,13 +673,26 @@ export class ServiceManager {
   }
 
   /**
-   * Get environment variables from service file
+   * Get environment variables from the systemd unit (Linux) or merged from saved config (non-Linux without SSH).
    */
-  public async getEnvironmentVariables(): Promise<Record<string, string>> {
+  public async getEnvironmentVariables(config?: AddonManagerConfig): Promise<Record<string, string>> {
     await this.detectRemoteOS();
 
     if (this.os !== OperatingSystem.LINUX) {
-      throw new Error("Environment variable management is only supported on Linux systems");
+      if (this.ssh) {
+        throw new Error(
+          "Remote host is not Linux; environment variables are only read from systemd units on Linux."
+        );
+      }
+      if (!config) {
+        throw new Error(
+          "On this system, environment variables are not read from systemd. Pass the saved addon configuration to show merged values from your config file, or connect via SSH to manage a Linux host."
+        );
+      }
+      logger.info("[ServiceManager] Non-Linux host without SSH: returning env vars from config merge", {
+        service: this.serviceName,
+      });
+      return EnvVarManager.mergeEnvVars(config, config.addon.environmentVariables);
     }
 
     try {
@@ -716,7 +738,28 @@ export class ServiceManager {
     await this.detectRemoteOS();
 
     if (this.os !== OperatingSystem.LINUX) {
-      throw new Error("Environment variable management is only supported on Linux systems");
+      if (this.ssh) {
+        throw new Error(
+          "Remote host is not Linux; environment variables can only be written to systemd units on Linux."
+        );
+      }
+      if (Object.keys(vars).length === 0) {
+        logger.warn("No environment variables provided to set");
+        return;
+      }
+      const validationResult = EnvVarManager.validateEnvVars(vars);
+      if (!validationResult.valid) {
+        const errorMessages = validationResult.errors.map((e) => `  - ${e.key}: ${e.error}`).join("\n");
+        throw new Error(
+          `Invalid environment variable values:\n${errorMessages}\n` +
+            "Please fix these errors before saving."
+        );
+      }
+      logger.info(
+        "[ServiceManager] Non-Linux host without SSH: skipping systemd write (persist overrides in app config only)",
+        { service: this.serviceName, count: Object.keys(vars).length }
+      );
+      return;
     }
 
     try {
@@ -820,7 +863,16 @@ export class ServiceManager {
     await this.detectRemoteOS();
 
     if (this.os !== OperatingSystem.LINUX) {
-      throw new Error("Environment variable management is only supported on Linux systems");
+      if (this.ssh) {
+        throw new Error(
+          "Remote host is not Linux; environment variables can only be reset in systemd units on Linux."
+        );
+      }
+      logger.info(
+        "[ServiceManager] Non-Linux host without SSH: skipping systemd reset (clear overrides in app config only)",
+        { service: this.serviceName }
+      );
+      return;
     }
 
     try {
@@ -865,7 +917,16 @@ export class ServiceManager {
     await this.detectRemoteOS();
 
     if (this.os !== OperatingSystem.LINUX) {
-      throw new Error("Environment variable management is only supported on Linux systems");
+      if (this.ssh) {
+        throw new Error(
+          "Remote host is not Linux; environment variables can only be synced to systemd units on Linux."
+        );
+      }
+      logger.info(
+        "[ServiceManager] Non-Linux host without SSH: skipping sync to systemd (config is saved locally)",
+        { service: this.serviceName }
+      );
+      return;
     }
 
     try {
@@ -912,7 +973,13 @@ export class ServiceManager {
     await this.detectRemoteOS();
 
     if (this.os !== OperatingSystem.LINUX) {
-      throw new Error("Service file sync is only supported on Linux systems");
+      if (this.ssh) {
+        throw new Error("Remote host is not Linux; systemd service files can only be synced on Linux.");
+      }
+      const msg =
+        "Skipped systemd sync: not on Linux and not connected via SSH. Your configuration is saved locally; deploy or use SSH to update the Pi.";
+      logger.info(`[ServiceManager] ${msg}`, { service: this.serviceName });
+      return { updated: false, changes: [msg] };
     }
 
     try {

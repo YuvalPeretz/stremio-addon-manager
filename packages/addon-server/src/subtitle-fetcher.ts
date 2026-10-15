@@ -8,7 +8,9 @@ import type { Subtitle } from "./types.js";
 import type { CacheManager } from "./cache.js";
 
 // Wyzie Subs API base URL (free, no rate limits, no API key needed)
-const WYZIE_API_BASE = "https://sub.wyzie.ru/api";
+// API format: /search?id=<imdbId>&season=<s>&episode=<e> (series)
+//             /search?id=<imdbId>                        (movie)
+const WYZIE_API_BASE = "https://sub.wyzie.ru";
 
 // Language codes we want to fetch (prioritizing English and Hebrew, but including many others)
 const PREFERRED_LANGUAGES = [
@@ -128,14 +130,14 @@ export async function fetchSubtitles(
       if (parts.length >= 3) {
         const season = parts[1];
         const episode = parts[2];
-        apiUrl = `${WYZIE_API_BASE}/imdb/${imdbId}/${season}/${episode}`;
+        apiUrl = `${WYZIE_API_BASE}/search?id=${imdbId}&season=${season}&episode=${episode}`;
       } else {
         console.log(`⚠️  Invalid series ID format: ${id}`);
         return [];
       }
     } else {
       // For movies
-      apiUrl = `${WYZIE_API_BASE}/imdb/${imdbId}`;
+      apiUrl = `${WYZIE_API_BASE}/search?id=${imdbId}`;
     }
 
     console.log(`Fetching subtitles from Wyzie API: ${apiUrl}`);
@@ -146,8 +148,9 @@ export async function fetchSubtitles(
       },
     });
 
+    // The API returns a JSON error object (not an array) when no subtitles are found
     if (!response.data || !Array.isArray(response.data)) {
-      console.log(`No subtitles found for ${imdbId}`);
+      console.log(`No subtitles found for ${imdbId} (Wyzie returned non-array response)`);
       return [];
     }
 
@@ -192,8 +195,14 @@ export async function fetchSubtitles(
     return subtitles;
   } catch (error) {
     if (axios.isAxiosError(error)) {
-      if (error.response?.status === 404) {
-        console.log(`No subtitles available for ${imdbId}`);
+      const status = error.response?.status;
+      if (status === 400 || status === 404) {
+        // 400 = no subtitles found (normal); 404 = endpoint gone
+        console.log(`No subtitles available for ${imdbId} (${status})`);
+      } else if (status === 401 || status === 403) {
+        // API now requires auth — cache the empty result for 1 hour to stop spamming the API
+        console.warn(`Subtitle API requires authentication (${status}) — caching empty result for ${imdbId}`);
+        cacheManager.setMetadata(cacheKey, []);
       } else {
         console.error(`Subtitle API error for ${imdbId}:`, error.message);
       }

@@ -33,6 +33,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { addonListAtom, addonLoadingAtom, selectedAddonIdAtom, defaultAddonAtom } from "../../atoms/addonAtoms";
 import type { AddonMetadata } from "@stremio-addon-manager/core";
+import { normalizeAddonProduct, productLabel } from "@stremio-addon-manager/core/browser";
 import styles from "./AddonManagement.module.scss";
 
 const { Title, Text } = Typography;
@@ -222,6 +223,9 @@ function AddonManagement() {
         <Space>
           <Text strong>{text}</Text>
           {defaultAddon?.id === record.id && <Tag color="blue">Default</Tag>}
+          <Tag color={normalizeAddonProduct(record.product) === "translated_subtitles" ? "geekblue" : "default"}>
+            {productLabel(normalizeAddonProduct(record.product))}
+          </Tag>
         </Space>
       ),
       sorter: (a, b) => a.name.localeCompare(b.name),

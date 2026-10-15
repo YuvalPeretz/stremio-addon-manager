@@ -4,8 +4,9 @@
  */
 
 export { ServerDetector } from "./detector.js";
-export { ServerConnection } from "./connection.js";
+export { ServerConnection, normalizeHealthPayload } from "./connection.js";
 export { ConnectionProfileManager } from "./profile.js";
+export { normalizeBaseUrl, joinBaseUrl, preferHttpForLoopback } from "../utils/url.js";
 
 export type {
   ServerInfo,

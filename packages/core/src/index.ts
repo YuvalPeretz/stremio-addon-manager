@@ -23,7 +23,15 @@ export type { ServiceInfo, ServiceConfig } from "./service/index.js";
 export { ServiceStatus } from "./service/index.js";
 
 // Export Config module
-export { ConfigManager, AddonRegistry, AddonRegistryManager, generateServiceName, EnvVarManager } from "./config/index.js";
+export {
+  ConfigManager,
+  AddonRegistry,
+  AddonRegistryManager,
+  generateServiceName,
+  EnvVarManager,
+  CUSTOM_SCRIPT_REGISTRY_PORT,
+  domainFromPublicUrl,
+} from "./config/index.js";
 export {
   migrateLegacyConfig,
   autoMigrateIfNeeded,
@@ -39,15 +47,66 @@ export type {
   TargetConfig,
   AddonMetadata,
   AddonRegistryData,
+  CustomScriptConfig,
+  CustomScriptArtifactMode,
+  CustomScriptUpdateScriptMode,
+  CustomScriptDeployMode,
+  CreateAddonOptions,
+  AddonProduct,
+  LlmModelCatalogEntry,
 } from "./config/index.js";
-export { AccessMethod, InstallationType, Provider, DEFAULT_CONFIG } from "./config/index.js";
+export {
+  AccessMethod,
+  InstallationType,
+  Provider,
+  DEFAULT_CONFIG,
+  DEFAULT_CUSTOM_SCRIPT_CONFIG,
+  DEFAULT_ADDON_PRODUCT,
+  normalizeAddonProduct,
+  isTranslatedSubtitlesProduct,
+  productPackageDir,
+  productLabel,
+  TRANSLATED_SUBTITLES_DEFAULT_PORT,
+  LLM_MODEL_CATALOG,
+  DEFAULT_LLM_MODEL_ID,
+  getLlmModelCatalogEntry,
+  resolveLlmModelCatalogEntry,
+  llmModelWizardCopy,
+  TRANSLATED_SUBTITLES_ENV_METADATA,
+  STREAMING_ONLY_ENV_KEYS,
+  getTranslatedSubtitlesEnvVarsFromConfig,
+  stripStreamingOnlyEnvKeys,
+  DEFAULT_TARGET_LANG,
+  DEFAULT_OPENSUBTITLES_BASE_URL,
+  DEFAULT_LLM_MODELS_DIR,
+  DEFAULT_LLM_SERVER_URL,
+} from "./config/index.js";
 
 // Export Utils module
 export { logger, initLogger, getLogger, LogLevel } from "./utils/index.js";
 export type { Logger, LoggerConfig } from "./utils/index.js";
+export { normalizeBaseUrl, joinBaseUrl, preferHttpForLoopback } from "./utils/index.js";
 
 // Export Installation module
-export { InstallationManager, UpdateManager } from "./installation/index.js";
+export {
+  InstallationManager,
+  UpdateManager,
+  CustomScriptInstaller,
+  hashScriptContent,
+  parseManagerSsh,
+  preflightBash,
+  resolveBashPath,
+  runBashScript,
+  detectPythonInBash,
+  createPython3ShimDir,
+  runBashCommand,
+  PYTHON_DOWNLOAD_URL,
+  SSH_HELP_URL,
+  resolveBundledAddonServerPath,
+  readBundledAddonServerVersion,
+  resolveBundledProductPath,
+  readBundledProductVersion,
+} from "./installation/index.js";
 export type {
   InstallationOptions,
   InstallationResult,
@@ -65,11 +124,24 @@ export type {
   BackupEntry,
   UpdateHistoryEntry,
   VersionComparison,
+  CustomScriptRunOptions,
+  CustomScriptRunResult,
+  CustomScriptAddonIdentity,
+  StagedArtifacts,
+  RemoteStagingPaths,
+  ParsedManagerSsh,
+  BashPreflightResult,
+  BashPreflightErrorCode,
+  ScriptRunOptions,
+  ScriptRunResult,
+  PythonPreflightInfo,
+  PythonResolvedAs,
+  ToolPreflightInfo,
 } from "./installation/index.js";
 export { InstallationStep, StepStatus, UpdateStep, UpdateStepStatus } from "./installation/index.js";
 
 // Export Server module
-export { ServerDetector, ServerConnection, ConnectionProfileManager } from "./server/index.js";
+export { ServerDetector, ServerConnection, ConnectionProfileManager, normalizeHealthPayload } from "./server/index.js";
 export type {
   ServerInfo,
   AddonManifest,

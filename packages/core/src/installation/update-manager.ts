@@ -10,7 +10,11 @@ import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { logger } from '../utils/logger.js';
 import { AddonRegistryManager } from '../config/registry-manager.js';
+import { normalizeAddonProduct, productPackageDir } from '../config/product.js';
+import type { AddonProduct } from '../config/product.js';
+import { ConfigManager } from '../config/manager.js';
 import { ServiceManager } from '../service/manager.js';
+import { ServiceFileManager } from '../service/file-manager.js';
 import { ServiceStatus } from '../service/types.js';
 import type { SSHConnection } from '../ssh/types.js';
 import type {
@@ -24,6 +28,8 @@ import type {
   BackupOptions,
   BackupEntry,
   VersionComparison,
+  DiagnosticItem,
+  DiagnosticsResult,
 } from './update-types.js';
 import { UpdateStep, UpdateStepStatus } from './update-types.js';
 
@@ -69,18 +75,24 @@ export class UpdateManager {
 
     // Otherwise, try to read from package.json in addon directory
     try {
-      // configPath is the path to the config.json file
-      // The addon-server directory should be a sibling of the config file
-      const addonDir = path.dirname(addon.configPath);
-      const packageJsonPath = path.join(addonDir, 'addon-server', 'package.json');
-      
-      logger.debug('Reading version from package.json', { 
-        addonId, 
+      // For remote addons, the package.json is in config.paths.addonDirectory on the Pi.
+      // For local addons, it's in <localConfigDir>/addon-server/package.json.
+      let packageJsonPath: string;
+      if (this.ssh) {
+        const remoteDeployDir = await this.getRemoteDeployDir(addon.configPath, addon.serviceName);
+        packageJsonPath = `${remoteDeployDir}/package.json`;
+      } else {
+        const addonDir = path.dirname(addon.configPath);
+        const packageDir = productPackageDir(normalizeAddonProduct(addon.product));
+        packageJsonPath = path.join(addonDir, packageDir, 'package.json');
+      }
+
+      logger.debug('Reading version from package.json', {
+        addonId,
         configPath: addon.configPath,
-        addonDir,
-        packageJsonPath 
+        packageJsonPath
       });
-      
+
       const version = await this.readVersionFromPackageJson(packageJsonPath);
       
       // Update registry with the version
@@ -101,11 +113,9 @@ export class UpdateManager {
   /**
    * Get latest available version (from bundled package)
    */
-  public getLatestVersion(): string {
+  public getLatestVersion(product?: AddonProduct): string {
     try {
-      // Read version from bundled addon-server package.json
-      // This assumes we're running from CLI or Electron which bundles the addon-server
-      const packageJsonPath = this.getBundledPackageJsonPath();
+      const packageJsonPath = this.getBundledPackageJsonPath(product);
       const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
       return packageJson.version || '1.0.0';
     } catch (error) {
@@ -119,8 +129,8 @@ export class UpdateManager {
    * For now, only returns the latest version
    * In the future, this could return multiple versions from a version registry
    */
-  public getAvailableVersions(): string[] {
-    const latest = this.getLatestVersion();
+  public getAvailableVersions(product?: AddonProduct): string[] {
+    const latest = this.getLatestVersion(product);
     return [latest];
   }
 
@@ -131,8 +141,11 @@ export class UpdateManager {
     logger.info('Checking for updates', { addonId });
 
     const currentVersion = await this.getCurrentVersion(addonId);
-    const latestVersion = this.getLatestVersion();
-    const availableVersions = this.getAvailableVersions();
+    const registry = this.registryManager.getRegistry();
+    await registry.load();
+    const addon = registry.get(addonId);
+    const latestVersion = this.getLatestVersion(addon?.product);
+    const availableVersions = this.getAvailableVersions(addon?.product);
 
     const comparison = this.compareVersions(currentVersion, latestVersion);
     const updateAvailable = comparison.isNewer;
@@ -325,10 +338,37 @@ export class UpdateManager {
         await this.installDependenciesIfNeeded(addon);
       }, opts.progressCallback);
 
-      // Step 6: Update configuration
+      // Step 6: Update configuration — patch service file with any missing env vars
       await this.executeStep(UpdateStep.UPDATE_CONFIG, async () => {
-        // Update service file if needed
-        // For now, this is a placeholder
+        try {
+          const existing = await ServiceFileManager.readServiceFile(addon.serviceName, this.ssh);
+          const presentKeys = new Set(existing.service.environment.map((e) => e.key));
+
+          // Add non-sensitive defaults for new env vars if absent.
+          // TORBOX_API_TOKEN is intentionally excluded — it's sensitive and the user must set it explicitly.
+          const patchVars: Record<string, string> = {};
+          if (!presentKeys.has('STREAM_PROVIDER_MODE')) {
+            patchVars['STREAM_PROVIDER_MODE'] = 'parallel';
+          }
+          if (!presentKeys.has('STREAM_PROVIDER_ORDER')) {
+            patchVars['STREAM_PROVIDER_ORDER'] = 'real-debrid';
+          }
+          // Classic installs are single-app admin units; server default is false (public dual-app).
+          if (!presentKeys.has('ENABLE_MANAGEMENT_API')) {
+            patchVars['ENABLE_MANAGEMENT_API'] = 'true';
+          }
+
+          if (Object.keys(patchVars).length > 0) {
+            await ServiceFileManager.updateServiceFile(addon.serviceName, patchVars, this.ssh);
+            logger.info('Patched service file with new env defaults', { addonId: addon.id, patchVars });
+          }
+        } catch (err) {
+          // Non-fatal — existing addons without the new vars still work (defaults are applied at runtime)
+          logger.warn('Could not patch service file env vars; addon will use runtime defaults', {
+            addonId: addon.id,
+            error: (err as Error).message,
+          });
+        }
       }, opts.progressCallback);
 
       // Step 7: Restart service
@@ -346,7 +386,21 @@ export class UpdateManager {
         await this.verifyUpdate(addon);
       }, opts.progressCallback);
 
-      // Step 9: Update registry
+      // Step 9: Run diagnostics — checks for misconfigurations and auto-fixes what it can.
+      // Intentionally non-fatal: diagnostics errors are surfaced to the user but never abort the update.
+      let diagnostics: DiagnosticsResult | undefined;
+      this.updateProgress(UpdateStep.DIAGNOSE, UpdateStepStatus.IN_PROGRESS, 'Running configuration diagnostics...', 0, opts.progressCallback);
+      try {
+        diagnostics = await this.runDiagnostics(addon);
+        const { errors, warnings } = diagnostics;
+        const summary = `${diagnostics.checks.length} checks — ${errors} error(s), ${warnings} warning(s)`;
+        this.updateProgress(UpdateStep.DIAGNOSE, UpdateStepStatus.COMPLETED, summary, 0, opts.progressCallback);
+      } catch (diagErr) {
+        logger.warn('Diagnostics step threw unexpectedly', { error: (diagErr as Error).message });
+        this.updateProgress(UpdateStep.DIAGNOSE, UpdateStepStatus.FAILED, `Diagnostics could not run: ${(diagErr as Error).message}`, 0, opts.progressCallback);
+      }
+
+      // Step 10: Update registry
       await this.executeStep(UpdateStep.UPDATE_REGISTRY, async () => {
         addon.version = newVersion;
         addon.lastUpdated = new Date().toISOString();
@@ -398,6 +452,7 @@ export class UpdateManager {
         backupId,
         changes: [`Updated from ${previousVersion} to ${newVersion}`],
         steps: this.steps,
+        diagnostics,
       };
     } catch (error) {
       const duration = Date.now() - this.startTime;
@@ -611,6 +666,292 @@ export class UpdateManager {
     }
   }
 
+  // ==================== Diagnostics ====================
+
+  /**
+   * Run a comprehensive set of checks against the remote addon and return structured results.
+   * Checks that can be auto-fixed are fixed in place (the check is still reported with autoFixed=true).
+   * Checks are non-fatal: the update is not aborted on failure here.
+   */
+  private async runDiagnostics(addon: any): Promise<DiagnosticsResult> {
+    const checks: DiagnosticItem[] = [];
+
+    const ok = (check: string, message: string, autoFixed = false): void => {
+      checks.push({ check, status: 'ok', message, autoFixed });
+    };
+    const warn = (check: string, message: string, autoFixed = false): void => {
+      checks.push({ check, status: 'warning', message, autoFixed });
+    };
+    const error = (check: string, message: string, autoFixed = false): void => {
+      checks.push({ check, status: 'error', message, autoFixed });
+    };
+
+    // ── 1. Resolve remote deploy dir ────────────────────────────────────────
+    let remoteDeployDir: string;
+    try {
+      remoteDeployDir = await this.getRemoteDeployDir(addon.configPath, addon.serviceName);
+      ok('deploy_dir', `Deployment directory resolved: ${remoteDeployDir}`);
+    } catch (e) {
+      error('deploy_dir', `Cannot determine deployment directory: ${(e as Error).message}`);
+      return { checks, errors: checks.filter(c => c.status === 'error').length, warnings: checks.filter(c => c.status === 'warning').length };
+    }
+
+    // ── 2. Required files present ────────────────────────────────────────────
+    if (this.ssh) {
+      try {
+        const serverJsResult = await this.ssh.execCommand(`test -f ${remoteDeployDir}/server.js && echo "ok" || echo "missing"`);
+        if (serverJsResult.stdout.trim() === 'ok') {
+          ok('server_js', `server.js found at ${remoteDeployDir}/server.js`);
+        } else {
+          error('server_js', `server.js missing from ${remoteDeployDir} — files may not have deployed correctly`);
+        }
+      } catch (e) {
+        warn('server_js', `Could not check server.js: ${(e as Error).message}`);
+      }
+
+      try {
+        const pkgResult = await this.ssh.execCommand(`test -f ${remoteDeployDir}/package.json && echo "ok" || echo "missing"`);
+        if (pkgResult.stdout.trim() === 'ok') {
+          ok('package_json', `package.json found at ${remoteDeployDir}/package.json`);
+        } else {
+          error('package_json', `package.json missing from ${remoteDeployDir}`);
+        }
+      } catch (e) {
+        warn('package_json', `Could not check package.json: ${(e as Error).message}`);
+      }
+
+      try {
+        const nmResult = await this.ssh.execCommand(`test -d ${remoteDeployDir}/node_modules && echo "ok" || echo "missing"`);
+        if (nmResult.stdout.trim() === 'ok') {
+          ok('node_modules', `node_modules directory present`);
+        } else {
+          warn('node_modules', `node_modules missing from ${remoteDeployDir} — dependencies may need to be installed`);
+        }
+      } catch (e) {
+        warn('node_modules', `Could not check node_modules: ${(e as Error).message}`);
+      }
+    }
+
+    // ── 3. Service file checks ───────────────────────────────────────────────
+    let serviceFile: import('../service/file-manager.js').ServiceFileContent | null = null;
+    try {
+      serviceFile = await ServiceFileManager.readServiceFile(addon.serviceName, this.ssh);
+      ok('service_file', `Service file readable for ${addon.serviceName}`);
+    } catch (e) {
+      error('service_file', `Cannot read service file for ${addon.serviceName}: ${(e as Error).message}`);
+    }
+
+    if (serviceFile) {
+      // 3a. ExecStart points to the right place
+      const expectedExecStart = `/usr/bin/node ${remoteDeployDir}/server.js`;
+      const actualExecStart = serviceFile.service.execStart ?? '';
+      if (actualExecStart.includes(`${remoteDeployDir}/server.js`)) {
+        ok('exec_start', `ExecStart correctly points to ${remoteDeployDir}/server.js`);
+      } else if (actualExecStart === '') {
+        error('exec_start', `ExecStart is empty in service file — service will not start`);
+      } else {
+        warn('exec_start', `ExecStart is "${actualExecStart}" but expected it to reference "${expectedExecStart}"`);
+      }
+
+      // 3b. WorkingDirectory
+      const workDir = serviceFile.service.workingDirectory ?? '';
+      if (workDir === remoteDeployDir || workDir === '') {
+        if (workDir !== '') ok('working_dir', `WorkingDirectory set to ${workDir}`);
+      } else {
+        warn('working_dir', `WorkingDirectory is "${workDir}" but deploy dir is "${remoteDeployDir}"`);
+      }
+
+      // 3c. Required env vars
+      const envMap = new Map(serviceFile.service.environment.map(e => [e.key, e.value]));
+
+      const rdToken = envMap.get('RD_API_TOKEN') ?? '';
+      const torboxToken = envMap.get('TORBOX_API_TOKEN') ?? '';
+      const hasRd = rdToken.length > 0 && rdToken !== 'YOUR_REAL_DEBRID_TOKEN_HERE';
+      const hasTorbox = torboxToken.length > 0;
+
+      if (!hasRd && !hasTorbox) {
+        error('provider_token', 'Neither RD_API_TOKEN nor TORBOX_API_TOKEN is set — no stream provider is configured');
+      } else {
+        if (hasRd) ok('rd_token', 'RD_API_TOKEN is set');
+        if (hasTorbox) ok('torbox_token', 'TORBOX_API_TOKEN is set');
+      }
+
+      const password = envMap.get('ADDON_PASSWORD') ?? '';
+      if (!password || password === 'YOUR_ADDON_PASSWORD_HERE') {
+        warn('addon_password', 'ADDON_PASSWORD is not set — addon will run without authentication');
+      } else {
+        ok('addon_password', 'ADDON_PASSWORD is set');
+      }
+
+      const port = envMap.get('PORT') ?? '';
+      if (!port) {
+        warn('port', 'PORT is not set in service file — will use default 7000');
+      } else {
+        ok('port', `PORT is set to ${port}`);
+      }
+
+      // 3d. Provider mode / order + management API (auto-fix if missing)
+      const patchVars: Record<string, string> = {};
+      if (!envMap.has('STREAM_PROVIDER_MODE')) {
+        patchVars['STREAM_PROVIDER_MODE'] = 'parallel';
+      }
+      if (!envMap.has('STREAM_PROVIDER_ORDER')) {
+        patchVars['STREAM_PROVIDER_ORDER'] = hasRd ? 'real-debrid' : hasTorbox ? 'torbox' : 'real-debrid';
+      }
+      if (!envMap.has('ENABLE_MANAGEMENT_API')) {
+        patchVars['ENABLE_MANAGEMENT_API'] = 'true';
+      }
+
+      if (Object.keys(patchVars).length > 0) {
+        try {
+          await ServiceFileManager.updateServiceFile(addon.serviceName, patchVars, this.ssh);
+          for (const [k, v] of Object.entries(patchVars)) {
+            warn('provider_config', `${k} was missing — set to "${v}"`, true);
+          }
+        } catch (e) {
+          warn('provider_config', `Some provider env vars are missing but could not be auto-fixed: ${(e as Error).message}`);
+        }
+      } else {
+        ok('provider_config', `STREAM_PROVIDER_MODE=${envMap.get('STREAM_PROVIDER_MODE')}, STREAM_PROVIDER_ORDER=${envMap.get('STREAM_PROVIDER_ORDER')}, ENABLE_MANAGEMENT_API=${envMap.get('ENABLE_MANAGEMENT_API')}`);
+      }
+
+      // 3e. MAX_CONCURRENT_VIEWERS
+      if (!envMap.has('MAX_CONCURRENT_VIEWERS')) {
+        try {
+          await ServiceFileManager.updateServiceFile(addon.serviceName, { MAX_CONCURRENT_VIEWERS: '10' }, this.ssh);
+          warn('concurrent_viewers', 'MAX_CONCURRENT_VIEWERS was missing — set to 10', true);
+        } catch {
+          warn('concurrent_viewers', 'MAX_CONCURRENT_VIEWERS is not set in service file — will use default 10');
+        }
+      } else {
+        ok('concurrent_viewers', `MAX_CONCURRENT_VIEWERS=${envMap.get('MAX_CONCURRENT_VIEWERS')}`);
+      }
+    }
+
+    // ── 4. Service running check ─────────────────────────────────────────────
+    try {
+      const svcMgr = new ServiceManager(addon.serviceName, this.ssh);
+      const status = await svcMgr.status();
+      if (status.status === ServiceStatus.ACTIVE) {
+        ok('service_running', `Service ${addon.serviceName} is active and running`);
+      } else if (status.status === ServiceStatus.FAILED) {
+        error('service_running', `Service ${addon.serviceName} is in FAILED state — check logs for crash details`);
+      } else {
+        warn('service_running', `Service ${addon.serviceName} status is "${status.status}" (expected active)`);
+      }
+    } catch (e) {
+      warn('service_running', `Could not check service status: ${(e as Error).message}`);
+    }
+
+    // ── 5. nginx check (if remote) ───────────────────────────────────────────
+    if (this.ssh) {
+      try {
+        const nginxResult = await this.ssh.execCommand('systemctl is-active nginx');
+        const nginxStatus = nginxResult.stdout.trim();
+        if (nginxStatus === 'active') {
+          ok('nginx', 'nginx is running');
+        } else {
+          error('nginx', `nginx is not running (status: ${nginxStatus}) — HTTPS proxy will fail`);
+        }
+      } catch (e) {
+        warn('nginx', `Could not check nginx status: ${(e as Error).message}`);
+      }
+    }
+
+    // ── 6. DuckDNS + maintenance script check (auto-fix) ─────────────────────
+    // Verifies that ~/duckdns/duck.sh exists, targets the correct domain, and
+    // includes the service watchdog.  Auto-rewrites + fixes the crontab if any
+    // of these are wrong — so running Update from the Electron app self-heals a
+    // misconfigured or manually-created DuckDNS script.
+    if (this.ssh) {
+      try {
+        const configManager = new ConfigManager(addon.id);
+        const config = await configManager.load();
+
+        if (config?.addon?.domain?.includes('duckdns.org') && config?.secrets?.duckdnsToken) {
+          const expectedDomain = config.addon.domain.replace('.duckdns.org', '');
+          const token = config.secrets.duckdnsToken;
+          const svcName = addon.serviceName as string;
+          const scriptPath = '~/duckdns/duck.sh';
+          const duckLogPath = '~/duckdns/duck.log';
+          const maintLogPath = '~/duckdns/maintenance.log';
+
+          const readResult = await this.ssh.execCommand(`cat ${scriptPath} 2>/dev/null || echo "__MISSING__"`);
+          const scriptContent = readResult.stdout.trim();
+
+          const isMissing = scriptContent === '__MISSING__';
+          const domainOk  = !isMissing && scriptContent.includes(expectedDomain);
+          const watchdogOk = !isMissing && scriptContent.includes(svcName);
+
+          if (isMissing || !domainOk || !watchdogOk) {
+            try {
+              const newScript = [
+                '#!/bin/bash',
+                '# Stremio Addon Maintenance Script — auto-generated, do not edit manually.',
+                '# Managed by stremio-addon-manager. Runs every 5 minutes via cron.',
+                '',
+                '# ── 1. Update DuckDNS with current public IP ──────────────────────────',
+                `curl -k "https://www.duckdns.org/update?domains=${expectedDomain}&token=${token}&ip=" -o ${duckLogPath} 2>&1`,
+                '',
+                '# ── 2. Rotate maintenance log if > 500 KB ─────────────────────────────',
+                `if [ -f ${maintLogPath} ] && [ "$(wc -c < ${maintLogPath})" -gt 512000 ]; then`,
+                `  tail -n 200 ${maintLogPath} > ${maintLogPath}.tmp && mv ${maintLogPath}.tmp ${maintLogPath}`,
+                'fi',
+                '',
+                '# ── 3. Ensure addon service is running ────────────────────────────────',
+                `if ! systemctl is-active --quiet ${svcName}; then`,
+                `  echo "$(date '+%Y-%m-%d %H:%M:%S') [watchdog] ${svcName} not active — restarting" >> ${maintLogPath}`,
+                `  sudo systemctl start ${svcName} >> ${maintLogPath} 2>&1`,
+                'fi',
+                '',
+                '# ── 4. Ensure nginx is running ────────────────────────────────────────',
+                'if ! systemctl is-active --quiet nginx; then',
+                `  echo "$(date '+%Y-%m-%d %H:%M:%S') [watchdog] nginx not active — restarting" >> ${maintLogPath}`,
+                `  sudo systemctl start nginx >> ${maintLogPath} 2>&1`,
+                'fi',
+              ].join('\n');
+
+              await this.ssh.execCommand(`mkdir -p ~/duckdns`);
+              await this.ssh.execCommand(`cat > ${scriptPath} << 'MAINT_EOF'\n${newScript}\nMAINT_EOF`);
+              await this.ssh.execCommand(`chmod +x ${scriptPath}`);
+
+              // Deduplicate crontab: remove all duck/duckdns entries, add exactly one.
+              await this.ssh.execCommand(
+                `(crontab -l 2>/dev/null | grep -Ev 'duck|duckdns'; echo "*/5 * * * * ${scriptPath} >/dev/null 2>&1") | crontab -`
+              );
+
+              const reason = isMissing
+                ? 'script was missing'
+                : !domainOk
+                  ? `script targeted wrong domain (expected ${expectedDomain})`
+                  : 'service watchdog was absent';
+
+              warn(
+                'duckdns_script',
+                `DuckDNS/maintenance script rebuilt (${reason}) — now targeting ${expectedDomain}.duckdns.org with watchdog for ${svcName}`,
+                true
+              );
+            } catch (fixErr) {
+              const reason = isMissing ? 'missing' : !domainOk ? 'wrong domain' : 'missing watchdog';
+              error('duckdns_script', `DuckDNS script is ${reason} and could not be auto-fixed: ${(fixErr as Error).message}`);
+            }
+          } else {
+            ok('duckdns_script', `DuckDNS/maintenance script correctly configured for ${expectedDomain}.duckdns.org`);
+          }
+        }
+      } catch (diagErr) {
+        warn('duckdns_script', `Could not check DuckDNS/maintenance script: ${(diagErr as Error).message}`);
+      }
+    }
+
+    const errors = checks.filter(c => c.status === 'error').length;
+    const warnings = checks.filter(c => c.status === 'warning').length;
+
+    logger.info('Diagnostics complete', { errors, warnings, totalChecks: checks.length });
+
+    return { checks, errors, warnings };
+  }
+
   // ==================== Private Helper Methods ====================
 
   /**
@@ -758,38 +1099,33 @@ export class UpdateManager {
   /**
    * Get bundled package.json path
    */
-  private getBundledPackageJsonPath(): string {
+  private getBundledPackageJsonPath(product?: AddonProduct): string {
     // Get current file's directory using ES modules approach
     const currentFileUrl = import.meta.url;
     const currentFilePath = fileURLToPath(currentFileUrl);
     const currentDir = path.dirname(currentFilePath);
+    const packageDir = productPackageDir(normalizeAddonProduct(product));
     
     // Try multiple possible locations based on the environment
     const possiblePaths = [
       // === Electron Production (packaged app) ===
-      // app.asar unpacked or app directory -> resources/addon-server
       ...(typeof process !== 'undefined' && process.versions && process.versions.electron ? [
-        // Use process.resourcesPath if available (Electron production)
-        (process as any).resourcesPath && path.join((process as any).resourcesPath, 'addon-server', 'package.json'),
-        // Or try relative to app path
-        path.resolve(currentDir, '../../../../resources/addon-server/package.json'),
-        path.resolve(currentDir, '../../../resources/addon-server/package.json'),
+        (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath &&
+          path.join(
+            (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath as string,
+            packageDir,
+            'package.json'
+          ),
+        path.resolve(currentDir, `../../../../resources/${packageDir}/package.json`),
+        path.resolve(currentDir, `../../../resources/${packageDir}/package.json`),
       ].filter(Boolean) : []),
       
-      // === Electron Development ===
-      // From packages/core/dist/installation -> packages/electron/resources/addon-server
-      path.resolve(currentDir, '../../../../../electron/resources/addon-server/package.json'),
-      path.resolve(currentDir, '../../../../electron/resources/addon-server/package.json'),
-      
-      // === CLI Production (bundled) ===
-      // From CLI's node_modules/@stremio-addon-manager/core/dist -> CLI's resources/addon-server
-      path.resolve(currentDir, '../../../resources/addon-server/package.json'),
-      path.resolve(currentDir, '../../resources/addon-server/package.json'),
-      
-      // === Development (monorepo) ===
-      // From packages/core/dist/installation -> packages/addon-server
-      path.resolve(currentDir, '../../../../addon-server/package.json'),
-      path.resolve(currentDir, '../../../addon-server/package.json'),
+      path.resolve(currentDir, `../../../../../electron/resources/${packageDir}/package.json`),
+      path.resolve(currentDir, `../../../../electron/resources/${packageDir}/package.json`),
+      path.resolve(currentDir, `../../../resources/${packageDir}/package.json`),
+      path.resolve(currentDir, `../../resources/${packageDir}/package.json`),
+      path.resolve(currentDir, `../../../../${packageDir}/package.json`),
+      path.resolve(currentDir, `../../../${packageDir}/package.json`),
     ];
 
     logger.debug('Searching for bundled addon-server package.json', {
@@ -853,26 +1189,66 @@ export class UpdateManager {
   }
 
   /**
+   * Load the full AddonManagerConfig from the addon's config.yaml path.
+   * Used to retrieve the actual remote deployment directory (paths.addonDirectory).
+   */
+  private async loadAddonManagerConfig(configPath: string): Promise<import('../config/types.js').AddonManagerConfig> {
+    const mgr = new ConfigManager(undefined, configPath);
+    return mgr.load();
+  }
+
+  /**
+   * Resolve the remote deployment directory for an addon.
+   * When running via SSH this must come from config.paths.addonDirectory — NOT from
+   * path.dirname(addon.configPath) which is the local Windows config directory.
+   *
+   * Falls back to the service-name convention (/opt/{serviceName}) when
+   * paths.addonDirectory is absent from the config (e.g. older configs that
+   * were saved before the paths section was added to the wizard).
+   */
+  private async getRemoteDeployDir(addonConfigPath: string, serviceName?: string): Promise<string> {
+    try {
+      const fullConfig = await this.loadAddonManagerConfig(addonConfigPath);
+      const dir = fullConfig.paths?.addonDirectory?.trim();
+      if (dir) {
+        logger.info('Remote deploy dir resolved from config', { dir });
+        return dir;
+      }
+    } catch (e) {
+      logger.warn('Could not load addon config to resolve deploy dir', { error: (e as Error).message });
+    }
+
+    // Fall back: the install manager always places addons at /opt/{serviceName}
+    if (serviceName) {
+      const derived = `/opt/${serviceName}`;
+      logger.warn('paths.addonDirectory not set in config — using convention-based fallback', { derived, serviceName });
+      return derived;
+    }
+
+    throw new Error(
+      `Cannot determine remote deployment directory: paths.addonDirectory is not set in ${addonConfigPath} and no serviceName provided`
+    );
+  }
+
+  /**
    * Update addon files
    */
   private async updateAddonFiles(addon: any, keepOldFiles: boolean): Promise<void> {
     logger.info('Updating addon files', { addonId: addon.id, keepOldFiles });
 
-    // Get the addon directory (parent of config path)
-    const addonDir = path.dirname(addon.configPath);
-    const addonServerDir = path.join(addonDir, 'addon-server');
-
     // Get bundled package path
     const bundledPackagePath = this.getBundledPackageJsonPath();
     const bundledDir = path.dirname(bundledPackagePath); // This is the bundled addon-server directory
 
-    logger.info('Addon paths', { addonDir, addonServerDir, bundledDir });
-
     if (this.ssh) {
-      // Remote update via SSH
-      await this.updateRemoteAddonFiles(addonDir, bundledDir, keepOldFiles);
+      // Remote update via SSH — use the actual Pi deployment path from the addon's config.yaml
+      const remoteDeployDir = await this.getRemoteDeployDir(addon.configPath, addon.serviceName);
+      logger.info('Addon paths (remote)', { remoteDeployDir, bundledDir });
+      await this.updateRemoteAddonFiles(remoteDeployDir, bundledDir, keepOldFiles);
     } else {
-      // Local update
+      // Local update — local addon-server lives in a subdirectory next to config
+      const addonDir = path.dirname(addon.configPath);
+      logger.info('Addon paths (local)', { addonDir, bundledDir });
       await this.updateLocalAddonFiles(addonDir, bundledDir, keepOldFiles);
     }
 
@@ -912,61 +1288,61 @@ export class UpdateManager {
   }
 
   /**
-   * Update addon files on remote server via SSH
+   * Update addon files on remote server via SSH.
+   * remoteDeployDir is the actual deployment directory on the Pi (e.g. /opt/stremio-addon-my-private-addon).
+   * Files are extracted directly into that directory — the service ExecStart points there.
    */
-  private async updateRemoteAddonFiles(addonDir: string, bundledDir: string, keepOldFiles: boolean): Promise<void> {
+  private async updateRemoteAddonFiles(remoteDeployDir: string, bundledDir: string, keepOldFiles: boolean): Promise<void> {
     if (!this.ssh) {
       throw new Error('SSH connection required for remote update');
     }
 
-    const addonServerDir = `${addonDir}/addon-server`;
-    const addonServerOldDir = `${addonDir}/addon-server.old`;
+    const remoteOldDir = `${remoteDeployDir}.old`;
 
-    // Backup old files if requested
+    // Ensure the deploy directory exists on the remote
+    await this.ssh.execCommand(`sudo mkdir -p ${remoteDeployDir}`);
+
+    // Keep a copy of the old directory for rollback if requested
     if (keepOldFiles) {
-      logger.info('Backing up old files on remote server');
-      const checkResult = await this.ssh.execCommand(`test -d ${addonServerDir} && echo "exists" || echo "not exists"`);
-      if (checkResult.stdout.trim() === 'exists') {
-        // Remove old backup if exists
-        await this.ssh.execCommand(`rm -rf ${addonServerOldDir}`);
-        // Move current to .old
-        await this.ssh.execCommand(`mv ${addonServerDir} ${addonServerOldDir}`);
-      }
-    } else {
-      // Just remove the old directory
-      await this.ssh.execCommand(`rm -rf ${addonServerDir}`);
+      logger.info('Backing up old files on remote server', { from: remoteDeployDir, to: remoteOldDir });
+      await this.ssh.execCommand(`sudo rm -rf ${remoteOldDir}`);
+      await this.ssh.execCommand(`sudo cp -r ${remoteDeployDir} ${remoteOldDir}`);
     }
-
-    // Create addon-server directory
-    await this.ssh.execCommand(`mkdir -p ${addonServerDir}`);
 
     // Create a tarball of the bundled directory
     const tempTarPath = path.join(os.tmpdir(), `addon-update-${Date.now()}.tar.gz`);
     logger.info('Creating tarball of bundled files', { tarPath: tempTarPath });
-    
-    execSync(`tar -czf ${tempTarPath} -C ${path.dirname(bundledDir)} ${path.basename(bundledDir)}`);
+
+    execSync(`tar -czf "${tempTarPath}" -C "${path.dirname(bundledDir)}" "${path.basename(bundledDir)}"`);
 
     // Upload tarball to remote server
     const remoteTarPath = `/tmp/addon-update-${Date.now()}.tar.gz`;
     logger.info('Uploading tarball to remote server', { remotePath: remoteTarPath });
-    
+
     await this.ssh.transferFile(tempTarPath, remoteTarPath);
 
-    // Extract tarball on remote server
-    logger.info('Extracting tarball on remote server');
+    // Extract tarball directly into the deploy directory, stripping the top-level dir name.
+    // This overwrites existing JS/JSON files in place without touching unrelated files
+    // (e.g. local-library data, runtime state).
+    logger.info('Extracting tarball on remote server', { into: remoteDeployDir });
     const extractResult = await this.ssh.execCommand(
-      `tar -xzf ${remoteTarPath} -C ${addonDir} && mv ${addonDir}/${path.basename(bundledDir)} ${addonServerDir}`
+      `sudo tar -xzf ${remoteTarPath} -C ${remoteDeployDir} --strip-components=1`
     );
 
     if (extractResult.code !== 0) {
       throw new Error(`Failed to extract files on remote server: ${extractResult.stderr}`);
     }
 
+    // Fix ownership so the SSH user can run npm install and the service can read files
+    const whoamiResult = await this.ssh.execCommand('whoami');
+    const username = whoamiResult.stdout.trim() || 'root';
+    await this.ssh.execCommand(`sudo chown -R ${username}:${username} ${remoteDeployDir}`);
+
     // Cleanup temp files
     fs.unlinkSync(tempTarPath);
     await this.ssh.execCommand(`rm -f ${remoteTarPath}`);
 
-    logger.info('Remote addon files updated');
+    logger.info('Remote addon files updated successfully', { remoteDeployDir });
   }
 
   /**
@@ -1002,13 +1378,11 @@ export class UpdateManager {
   private async installDependenciesIfNeeded(addon: any): Promise<void> {
     logger.info('Installing dependencies', { addonId: addon.id });
 
-    const addonDir = path.dirname(addon.configPath);
-    const addonServerDir = path.join(addonDir, 'addon-server');
-
     if (this.ssh) {
-      // Remote: install via SSH
-      logger.info('Installing dependencies on remote server');
-      const result = await this.ssh.execCommand(`cd ${addonServerDir} && npm install --production`);
+      // Remote: install via SSH using the actual Pi deployment path
+      const remoteDeployDir = await this.getRemoteDeployDir(addon.configPath, addon.serviceName);
+      logger.info('Installing dependencies on remote server', { remoteDeployDir });
+      const result = await this.ssh.execCommand(`cd ${remoteDeployDir} && npm install --production`);
 
       if (result.code !== 0) {
         logger.error('Failed to install dependencies on remote server', { stderr: result.stderr });
@@ -1017,9 +1391,10 @@ export class UpdateManager {
 
       logger.info('Dependencies installed on remote server');
     } else {
-      // Local: install using child_process
-      logger.info('Installing dependencies locally');
-      
+      // Local: install using child_process next to config file
+      const addonServerDir = path.join(path.dirname(addon.configPath), 'addon-server');
+      logger.info('Installing dependencies locally', { addonServerDir });
+
       try {
         execSync('npm install --production', {
           cwd: addonServerDir,
@@ -1039,21 +1414,21 @@ export class UpdateManager {
   private async verifyUpdate(addon: any): Promise<void> {
     logger.info('Verifying update', { addonId: addon.id });
 
-    const addonDir = path.dirname(addon.configPath);
-    const packageJsonPath = path.join(addonDir, 'addon-server', 'package.json');
-
     try {
       if (this.ssh) {
-        // Remote: verify via SSH
-        const result = await this.ssh.execCommand(`cat ${packageJsonPath}`);
+        // Remote: verify the server.js exists in the actual deployment directory
+        const remoteDeployDir = await this.getRemoteDeployDir(addon.configPath, addon.serviceName);
+        const remotePackageJsonPath = `${remoteDeployDir}/package.json`;
+        const result = await this.ssh.execCommand(`cat ${remotePackageJsonPath}`);
         if (result.code !== 0) {
-          throw new Error('package.json not found after update');
+          throw new Error(`package.json not found after update at ${remotePackageJsonPath}`);
         }
 
         const packageJson = JSON.parse(result.stdout);
-        logger.info('Update verified - package.json exists', { version: packageJson.version });
+        logger.info('Update verified - package.json exists', { version: packageJson.version, remoteDeployDir });
       } else {
         // Local: verify locally
+        const packageJsonPath = path.join(path.dirname(addon.configPath), 'addon-server', 'package.json');
         if (!fs.existsSync(packageJsonPath)) {
           throw new Error('package.json not found after update');
         }
@@ -1073,20 +1448,20 @@ export class UpdateManager {
   private async cleanupOldFiles(addon: any): Promise<void> {
     logger.info('Cleaning up old files', { addonId: addon.id });
 
-    const addonDir = path.dirname(addon.configPath);
-    const oldDir = path.join(addonDir, 'addon-server.old');
-
     if (this.ssh) {
-      // Remote: cleanup via SSH
-      const checkResult = await this.ssh.execCommand(`test -d ${oldDir} && echo "exists" || echo "not exists"`);
+      // Remote: cleanup via SSH using the actual Pi deployment path
+      const remoteDeployDir = await this.getRemoteDeployDir(addon.configPath, addon.serviceName);
+      const remoteOldDir = `${remoteDeployDir}.old`;
+      const checkResult = await this.ssh.execCommand(`test -d ${remoteOldDir} && echo "exists" || echo "not-exists"`);
       if (checkResult.stdout.trim() === 'exists') {
-        logger.info('Removing old files on remote server');
-        await this.ssh.execCommand(`rm -rf ${oldDir}`);
+        logger.info('Removing old files on remote server', { remoteOldDir });
+        await this.ssh.execCommand(`sudo rm -rf ${remoteOldDir}`);
       }
     } else {
       // Local: cleanup locally
+      const oldDir = path.join(path.dirname(addon.configPath), 'addon-server.old');
       if (fs.existsSync(oldDir)) {
-        logger.info('Removing old files locally');
+        logger.info('Removing old files locally', { oldDir });
         fs.rmSync(oldDir, { recursive: true, force: true });
       }
     }

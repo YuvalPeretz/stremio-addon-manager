@@ -36,6 +36,7 @@ function formatStepName(step: UpdateStep): string {
     [UpdateStep.UPDATE_CONFIG]: 'Updating configuration',
     [UpdateStep.RESTART_SERVICE]: 'Restarting service',
     [UpdateStep.VERIFY]: 'Verifying rollback',
+    [UpdateStep.DIAGNOSE]: 'Running diagnostics',
     [UpdateStep.UPDATE_REGISTRY]: 'Updating registry',
     [UpdateStep.CLEANUP]: 'Cleaning up',
     [UpdateStep.COMPLETE]: 'Complete',

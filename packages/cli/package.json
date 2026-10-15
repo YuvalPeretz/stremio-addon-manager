@@ -8,9 +8,10 @@
   },
   "scripts": {
     "build": "npm run build:packages && tsc --build",
-    "build:packages": "npm run build:core && npm run build:addon-server && node scripts/copy-packages.js",
+    "build:packages": "npm run build:core && npm run build:addon-server && npm run build:translated-subtitles && node scripts/copy-packages.js",
     "build:core": "cd ../core && npm run build",
     "build:addon-server": "cd ../addon-server && npm run build",
+    "build:translated-subtitles": "node -e \"const {existsSync}=require('fs'); const {spawnSync}=require('child_process'); if(!existsSync('../translated-subtitles/package.json')){console.log('skip translated-subtitles (package not present)');process.exit(0);} const r=spawnSync('npm',['run','build'],{cwd:'../translated-subtitles',stdio:'inherit',shell:true}); process.exit(r.status??1);\"",
     "dev": "tsc --build --watch",
     "clean": "rimraf dist .tsbuildinfo resources"
   },

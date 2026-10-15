@@ -302,3 +302,74 @@
   width: 100%;
 }
 
+// ── Diagnostics panel ──────────────────────────────────────────────────────
+
+.diagnosticsPanel {
+  h3 {
+    margin: 0 0 16px 0;
+    font-size: 18px;
+    color: var(--text-primary, #fff);
+  }
+}
+
+.diagChecks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.diagItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.diagIcon {
+  flex-shrink: 0;
+  font-weight: 700;
+  width: 16px;
+  text-align: center;
+}
+
+.diagMsg {
+  color: var(--text-primary, #ddd);
+
+  em {
+    color: var(--text-secondary, #aaa);
+    font-style: italic;
+  }
+}
+
+.diagOk {
+  background: rgba(76, 175, 80, 0.1);
+  border-left: 3px solid #4caf50;
+
+  .diagIcon { color: #4caf50; }
+}
+
+.diagWarn {
+  background: rgba(255, 193, 7, 0.1);
+  border-left: 3px solid #ffc107;
+
+  .diagIcon { color: #ffc107; }
+}
+
+.diagError {
+  background: rgba(244, 67, 54, 0.1);
+  border-left: 3px solid #f44336;
+
+  .diagIcon { color: #f44336; }
+}
+
+.allOk {
+  color: #4caf50;
+  font-size: 14px;
+  margin: 0;
+  text-align: center;
+  padding: 12px;
+}
+

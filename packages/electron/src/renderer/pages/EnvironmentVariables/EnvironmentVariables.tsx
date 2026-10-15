@@ -5,9 +5,11 @@
 
 import { useState, useEffect } from "react";
 import { useAtom } from "jotai";
-import { Flex, Typography, Button, Table, Input, Space, message, Modal, Tag, Tooltip, Popconfirm } from "antd";
+import { Alert, Flex, Typography, Button, Table, Input, Space, message, Modal, Tag, Tooltip, Popconfirm } from "antd";
 import { FiRefreshCw, FiEdit, FiRotateCw, FiSave, FiShuffle } from "react-icons/fi";
 import { selectedAddonIdAtom } from "../../atoms/addonAtoms";
+import { isCustomScriptInstall } from "../../utils/addonUrls";
+import type { AddonManagerConfig } from "@stremio-addon-manager/core";
 import styles from "./EnvironmentVariables.module.scss";
 
 const { Title, Text } = Typography;
@@ -78,7 +80,7 @@ function EnvironmentVariables() {
   async function loadMetadata() {
     try {
       console.log("[EnvVars] Loading metadata...");
-      const result = await window.electron.env.getMetadata();
+      const result = await window.electron.env.getMetadata(selectedAddonId || undefined);
       if (result.success && result.data) {
         console.log("[EnvVars] Metadata loaded:", {
           metadataKeys: Object.keys(result.data.metadata || {}).length,
@@ -149,9 +151,27 @@ function EnvironmentVariables() {
       console.log("[EnvVars] Loading environment variables for addon:", selectedAddonId || "(default)");
       
       // Ensure config is ALWAYS loaded before getting SSH config
-      if (!config) {
+      let loadedConfig = config;
+      if (!loadedConfig) {
         console.log("[EnvVars] Config not loaded yet, loading now...");
-        await loadConfig();
+        const configResult = await window.electron.config.load(selectedAddonId || undefined);
+        if (configResult.success && configResult.data) {
+          loadedConfig = configResult.data;
+          setConfig(configResult.data);
+        }
+      }
+
+      // custom_script: show YAML/config env (no systemd service file)
+      if (loadedConfig && isCustomScriptInstall(loadedConfig as AddonManagerConfig)) {
+        const fromConfig = (loadedConfig as AddonManagerConfig).addon?.environmentVariables || {};
+        const cleaned: Record<string, string> = {};
+        for (const [key, value] of Object.entries(fromConfig)) {
+          if (typeof value === "string") {
+            cleaned[key] = value;
+          }
+        }
+        setEnvVars(cleaned);
+        return;
       }
       
       const ssh = getSSHConfig();
@@ -584,8 +604,20 @@ function EnvironmentVariables() {
     },
   ];
 
+  const isCustomScript =
+    Boolean(config && isCustomScriptInstall(config as AddonManagerConfig));
+
   return (
     <div className={styles.container}>
+      {isCustomScript && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="Custom script install"
+          description="SSH service-file Sync does not apply here. Save from Configuration to merge into ADDON_ENV and run your deploy script with DEPLOY_MODE=config. Edits on this page alone will not update Gateway stacks."
+        />
+      )}
       <Flex justify="space-between" align="center" style={{ marginBottom: 16 }}>
         <Title level={5} style={{ margin: 0 }}>
           Environment Variables {selectedAddonId && `(${selectedAddonId})`}
@@ -605,7 +637,13 @@ function EnvironmentVariables() {
               Reset All
             </Button>
           </Popconfirm>
-          <Button type="primary" icon={<FiSave />} onClick={() => handleSync(false)}>
+          <Button
+            type="primary"
+            icon={<FiSave />}
+            onClick={() => handleSync(false)}
+            disabled={isCustomScript}
+            title={isCustomScript ? "Use Configuration → Save for custom_script" : undefined}
+          >
             Sync with Config
           </Button>
           <Popconfirm
@@ -613,8 +651,14 @@ function EnvironmentVariables() {
             description="This will sync the service file and restart the service to apply changes."
             onConfirm={() => handleSync(true)}
             okText="Sync & Restart"
+            disabled={isCustomScript}
           >
-            <Button type="primary" icon={<FiSave />}>
+            <Button
+              type="primary"
+              icon={<FiSave />}
+              disabled={isCustomScript}
+              title={isCustomScript ? "Use Configuration → Save for custom_script" : undefined}
+            >
               Sync & Restart
             </Button>
           </Popconfirm>

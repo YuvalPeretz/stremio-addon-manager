@@ -42,7 +42,14 @@ const api = {
     get: (addonId: string) => ipcRenderer.invoke("addon:get", addonId),
     getDefault: () => ipcRenderer.invoke("addon:getDefault"),
     setDefault: (addonId: string) => ipcRenderer.invoke("addon:setDefault", addonId),
-    create: (name: string, port: number, domain: string) => ipcRenderer.invoke("addon:create", name, port, domain),
+    create: (options: {
+      name: string;
+      type?: "classic" | "custom_script";
+      port?: number;
+      domain?: string;
+      publicUrl?: string;
+      managementUrl?: string;
+    }) => ipcRenderer.invoke("addon:create", options),
     delete: (addonId: string) => ipcRenderer.invoke("addon:delete", addonId),
   },
 
@@ -55,6 +62,25 @@ const api = {
     removeProgressListener: () => {
       ipcRenderer.removeAllListeners("install:progress");
     },
+  },
+
+  // Custom-script (dual Gateway) helpers
+  customScript: {
+    fetchScripts: (managementUrl: string, password: string) =>
+      ipcRenderer.invoke("customScript:fetchScripts", managementUrl, password),
+    fetchConfig: (managementUrl: string, password: string) =>
+      ipcRenderer.invoke("customScript:fetchConfig", managementUrl, password),
+    fetchLogs: (managementUrl: string, password: string, lines?: number) =>
+      ipcRenderer.invoke("customScript:fetchLogs", managementUrl, password, lines),
+    applyConfig: (
+      addonId: string,
+      options?: { scriptContent?: string; confirmScriptHash?: string; force?: boolean }
+    ) => ipcRenderer.invoke("customScript:applyConfig", addonId, options),
+  },
+
+  translatedSubtitles: {
+    switchModel: (addonId: string, modelId: string) =>
+      ipcRenderer.invoke("translatedSubtitles:switchModel", addonId, modelId),
   },
 
   // Service Management (with addonId support)
@@ -82,7 +108,7 @@ const api = {
     sync: (ssh?: unknown, addonId?: string, restartService?: boolean) =>
       ipcRenderer.invoke("env:sync", ssh, addonId, restartService),
     generate: (key: string, ssh?: unknown, addonId?: string) => ipcRenderer.invoke("env:generate", key, ssh, addonId),
-    getMetadata: () => ipcRenderer.invoke("env:getMetadata"),
+    getMetadata: (addonId?: string) => ipcRenderer.invoke("env:getMetadata", addonId),
   },
 
   // SSH

@@ -21,32 +21,54 @@ export class RealDebridClient {
     method: "GET" | "POST" = "GET",
     data: Record<string, string> | null = null
   ): Promise<T> {
-    try {
-      const config: AxiosRequestConfig = {
-        method,
-        url: `${this.config.rdApiBase}${endpoint}`,
-        headers: {
-          Authorization: `Bearer ${this.config.rdApiToken}`,
-        },
-      };
+    const maxAttempts = 4; // 3 retries on 429
 
-      if (data) {
-        if (method === "POST") {
-          config.data = new URLSearchParams(data);
-          config.headers!["Content-Type"] = "application/x-www-form-urlencoded";
-        } else {
-          config.params = data;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const config: AxiosRequestConfig = {
+          method,
+          url: `${this.config.rdApiBase}${endpoint}`,
+          headers: {
+            Authorization: `Bearer ${this.config.rdApiToken}`,
+          },
+        };
+
+        if (data) {
+          if (method === "POST") {
+            config.data = new URLSearchParams(data);
+            config.headers!["Content-Type"] = "application/x-www-form-urlencoded";
+          } else {
+            config.params = data;
+          }
         }
-      }
 
-      const response = await axios(config);
-      return response.data;
-    } catch (error) {
-      if (axios.isAxiosError(error)) {
-        console.error("RD API Error:", error.response?.data || error.message);
+        const response = await axios(config);
+        return response.data;
+      } catch (error) {
+        if (axios.isAxiosError(error)) {
+          const status = error.response?.status;
+
+          if (status === 429 && attempt < maxAttempts - 1) {
+            const delayMs = Math.min(2000 * Math.pow(2, attempt), 10000); // 2s, 4s, 8s
+            console.warn(`RD rate-limited (429), retrying in ${delayMs}ms (attempt ${attempt + 1}/${maxAttempts})...`);
+            await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+            continue;
+          }
+
+          const rdMessage = (error.response?.data as { error?: string })?.error ?? error.message;
+          if (status !== 451) {
+            console.error(`RD API Error [${status}]: ${rdMessage}`);
+          }
+          const clean = new Error(rdMessage) as Error & { rdStatus?: number };
+          clean.rdStatus = status;
+          throw clean;
+        }
+        throw error;
       }
-      throw error;
     }
+
+    // Unreachable — the loop always returns or throws on the final attempt
+    throw new Error("RD API: exhausted retries");
   }
 
   /**

@@ -29,6 +29,7 @@ export interface UpdateResult {
   warnings?: string[];           // Any warnings during update
   error?: string;                // Error message if failed
   steps: UpdateProgress[];
+  diagnostics?: DiagnosticsResult;
 }
 
 /**
@@ -71,9 +72,30 @@ export enum UpdateStep {
   UPDATE_CONFIG = 'update_config',
   RESTART_SERVICE = 'restart_service',
   VERIFY = 'verify',
+  DIAGNOSE = 'diagnose',
   UPDATE_REGISTRY = 'update_registry',
   CLEANUP = 'cleanup',
   COMPLETE = 'complete',
+}
+
+/**
+ * A single diagnostic check result
+ */
+export interface DiagnosticItem {
+  check: string;
+  status: 'ok' | 'warning' | 'error';
+  message: string;
+  /** True if the update process automatically corrected this issue */
+  autoFixed?: boolean;
+}
+
+/**
+ * Aggregated diagnostics from the DIAGNOSE step
+ */
+export interface DiagnosticsResult {
+  checks: DiagnosticItem[];
+  errors: number;
+  warnings: number;
 }
 
 /**

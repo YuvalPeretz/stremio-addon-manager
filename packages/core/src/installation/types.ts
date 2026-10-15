@@ -25,6 +25,14 @@ export enum InstallationStep {
   VERIFY_INSTALLATION = 'verify_installation',
   CLEANUP = 'cleanup',
   COMPLETE = 'complete',
+  /** Custom-script: stage ADDON_* and ADMIN_* trees */
+  STAGE_ARTIFACTS = 'stage_artifacts',
+  /** Custom-script: embed deploy scripts into ADMIN tree */
+  EMBED_SCRIPTS = 'embed_scripts',
+  /** Custom-script: upload staged trees to Gateway Manager via SSH */
+  UPLOAD_REMOTE_STAGING = 'upload_remote_staging',
+  /** Custom-script: spawn bash deploy script */
+  RUN_DEPLOY_SCRIPT = 'run_deploy_script',
 }
 
 /**
@@ -73,6 +81,8 @@ export interface InstallationResult {
   installManifestUrl: string;
   steps: InstallationProgress[];
   error?: Error;
+  /** Non-blocking notice (e.g. managementUrl scripts GET failed after publicUrl healthy) */
+  warning?: string;
   duration: number; // milliseconds
 }
 

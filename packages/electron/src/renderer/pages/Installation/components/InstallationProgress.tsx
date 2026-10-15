@@ -3,7 +3,7 @@
  * Displays real-time installation progress
  */
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Card, Progress, Timeline, Flex, Typography, Tag } from "antd";
 import { FiCheck, FiX, FiLoader, FiClock, FiSkipForward } from "react-icons/fi";
 import { useAtom } from "jotai";
@@ -18,10 +18,24 @@ const { Text, Title } = Typography;
 function InstallationProgress() {
   const [progressUpdates, setProgressUpdates] = useAtom(installationProgressAtom);
   const [latestProgress] = useAtom(latestInstallationProgressAtom);
+  const [scriptOutput, setScriptOutput] = useState("");
 
   useEffect(() => {
     // Subscribe to installation progress events
     window.electron.install.onProgress((progress: any) => {
+      if (
+        progress?.step === "run_deploy_script" &&
+        progress?.status === "in_progress" &&
+        typeof progress.message === "string" &&
+        progress.message &&
+        !progress.message.startsWith("Running deploy script")
+      ) {
+        setScriptOutput((prev) => {
+          const next = prev + (prev && !prev.endsWith("\n") ? "\n" : "") + progress.message;
+          return next.length > 20_000 ? next.slice(-20_000) : next;
+        });
+      }
+
       setProgressUpdates((prev) => {
         // Find if this step already exists in the updates
         const existingIndex = prev.findIndex((update) => update.step === progress.step);
@@ -123,6 +137,23 @@ function InstallationProgress() {
           }))}
         />
       </Card>
+
+      {scriptOutput && (
+        <Card title="Deploy script output">
+          <pre
+            style={{
+              margin: 0,
+              maxHeight: 320,
+              overflow: "auto",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              fontSize: 12,
+            }}
+          >
+            {scriptOutput}
+          </pre>
+        </Card>
+      )}
     </Flex>
   );
 }

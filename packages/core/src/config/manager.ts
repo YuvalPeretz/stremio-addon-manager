@@ -469,6 +469,9 @@ export class ConfigManager {
    */
   private mergeWithDefaults(loaded: Partial<AddonManagerConfig>): AddonManagerConfig {
     return {
+      addonId: loaded.addonId,
+      serviceName: loaded.serviceName,
+      product: loaded.product,
       installation: loaded.installation || {
         type: InstallationType.LOCAL,
         accessMethod: AccessMethod.DUCKDNS,

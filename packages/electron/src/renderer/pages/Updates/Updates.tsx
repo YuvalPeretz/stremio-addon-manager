@@ -3,7 +3,7 @@
  * Manage addon package updates
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useAtom } from "jotai";
 import {
   Card,
@@ -18,6 +18,8 @@ import {
   Progress,
   message,
   Tooltip,
+  Input,
+  Upload,
 } from "antd";
 import {
   FiRefreshCw,
@@ -26,14 +28,96 @@ import {
   FiCheck,
   FiAlertCircle,
   FiRotateCcw,
+  FiUpload,
 } from "react-icons/fi";
 import type { ColumnsType } from "antd/es/table";
+import type { UploadProps } from "antd";
 import { addonListAtom } from "../../atoms/addonAtoms";
 import { updateProgressAtom } from "../../atoms/updateAtoms";
-import type { AddonMetadata } from "@stremio-addon-manager/core";
+import type { AddonManagerConfig, AddonMetadata } from "@stremio-addon-manager/core";
+import { isCustomScriptInstall } from "../../utils/addonUrls";
 import styles from "./Updates.module.scss";
 
-const { Title, Text } = Typography;
+const { Title, Text, Paragraph } = Typography;
+const { TextArea } = Input;
+
+async function readUploadAsText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("Failed to read file"));
+    reader.readAsText(file);
+  });
+}
+
+/** Prompt user to paste or pick a deploy script when managementUrl is unreachable. */
+function promptDeployScript(options: {
+  title: string;
+  description: string;
+}): Promise<string | null> {
+  return new Promise((resolve) => {
+    let draft = "";
+    let settled = false;
+    const finish = (value: string | null): void => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    const beforeUpload: UploadProps["beforeUpload"] = async (file) => {
+      try {
+        draft = await readUploadAsText(file as unknown as File);
+        modal.update({
+          content: renderBody(draft),
+        });
+        message.success(`Loaded ${file.name}`);
+      } catch {
+        message.error("Failed to read script file");
+      }
+      return false;
+    };
+
+    function renderBody(value: string): ReactNode {
+      return (
+        <Flex vertical gap={12}>
+          <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            {options.description}
+          </Paragraph>
+          <Upload beforeUpload={beforeUpload} showUploadList={false} accept=".sh,text/*">
+            <Button icon={<FiUpload />}>Pick script file…</Button>
+          </Upload>
+          <TextArea
+            rows={12}
+            defaultValue={value}
+            placeholder="Paste deploy script here…"
+            onChange={(e) => {
+              draft = e.target.value;
+            }}
+            style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}
+          />
+        </Flex>
+      );
+    }
+
+    const modal = Modal.confirm({
+      title: options.title,
+      width: 720,
+      icon: null,
+      content: renderBody(""),
+      okText: "Use script and continue",
+      cancelText: "Cancel",
+      onOk: () => {
+        if (!draft.trim()) {
+          message.error("Paste or pick a deploy script first");
+          return Promise.reject(new Error("empty script"));
+        }
+        finish(draft);
+        return Promise.resolve();
+      },
+      onCancel: () => finish(null),
+    });
+  });
+}
 
 interface AddonUpdateInfo extends AddonMetadata {
   updateAvailable?: boolean;
@@ -48,6 +132,7 @@ function Updates() {
   const [addonsWithUpdateInfo, setAddonsWithUpdateInfo] = useState<AddonUpdateInfo[]>([]);
   const [checking, setChecking] = useState(false);
   const [updatingAddon, setUpdatingAddon] = useState<string | null>(null);
+  const [customScriptAddonIds, setCustomScriptAddonIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     loadAddons();
@@ -73,9 +158,23 @@ function Updates() {
   async function checkAllUpdates() {
     setChecking(true);
     const updatedList: AddonUpdateInfo[] = [];
+    const customIds = new Set<string>();
 
     for (const addon of addonList) {
       try {
+        try {
+          const cfgResult = await window.electron.config.load(addon.id);
+          if (
+            cfgResult.success &&
+            cfgResult.data &&
+            isCustomScriptInstall(cfgResult.data as AddonManagerConfig)
+          ) {
+            customIds.add(addon.id);
+          }
+        } catch {
+          // ignore config probe
+        }
+
         if (!window.electron?.update?.check) {
           console.warn("Update API not available");
           updatedList.push({
@@ -89,11 +188,16 @@ function Updates() {
         const result = await window.electron.update.check(addon.id);
         
         if (result.success && result.data) {
+          const info = result.data as {
+            updateAvailable?: boolean;
+            latestVersion?: string;
+            currentVersion?: string;
+          };
           updatedList.push({
             ...addon,
-            updateAvailable: result.data.updateAvailable,
-            latestVersion: result.data.latestVersion,
-            currentVersion: result.data.currentVersion,
+            updateAvailable: info.updateAvailable,
+            latestVersion: info.latestVersion,
+            currentVersion: info.currentVersion,
             checking: false,
           });
         } else {
@@ -114,30 +218,67 @@ function Updates() {
       }
     }
 
+    setCustomScriptAddonIds(customIds);
     setAddonsWithUpdateInfo(updatedList);
     setChecking(false);
   }
 
-  async function handleUpdateAddon(addonId: string, forceUpdate = false) {
+  async function handleUpdateAddon(
+    addonId: string,
+    forceUpdate = false,
+    confirmScriptHash?: string,
+    scriptContent?: string
+  ) {
     if (!window.electron?.update?.addon) {
       message.error("Update API not available");
       return;
     }
 
     setUpdatingAddon(addonId);
-    
+
     try {
       const result = await window.electron.update.addon(addonId, {
         skipBackup: false,
         restartService: true,
         forceUpdate,
+        confirmScriptHash,
+        force: forceUpdate,
+        scriptContent,
       });
 
+      if (!result.success && result.requiresScript) {
+        setUpdatingAddon(null);
+        const pasted = await promptDeployScript({
+          title: "Paste/pick deploy script",
+          description:
+            result.error ||
+            "Private admin managementUrl is unreachable and no stored script is available. Paste or pick the same deploy script used at install, then continue.",
+        });
+        if (!pasted) {
+          return;
+        }
+        await handleUpdateAddon(addonId, forceUpdate, confirmScriptHash, pasted);
+        return;
+      }
+
+      if (!result.success && result.requiresConfirm && result.scriptHash) {
+        const scriptHash = result.scriptHash;
+        Modal.confirm({
+          title: "Deploy script changed",
+          content: `The deploy script hash is now ${scriptHash.slice(0, 16)}…. Confirm to run the update with this script.`,
+          okText: "Confirm and update",
+          onOk: () => handleUpdateAddon(addonId, forceUpdate, scriptHash, scriptContent),
+        });
+        return;
+      }
+
       if (result.success) {
-        message.success(`Addon ${addonId} ${forceUpdate ? 'force ' : ''}updated successfully!`);
-        // Reload addon list from registry (to get updated version)
+        if (result.warning) {
+          message.warning(result.warning, 12);
+        } else {
+          message.success(`Addon ${addonId} ${forceUpdate ? "force " : ""}updated successfully!`);
+        }
         await loadAddons();
-        // Then refresh the update info
         await checkAllUpdates();
       } else {
         message.error(result.error || "Update failed");
@@ -151,9 +292,26 @@ function Updates() {
   }
 
   async function handleForceUpdate(addonId: string) {
+    const isCustom = customScriptAddonIds.has(addonId);
     Modal.confirm({
-      title: "Force Update",
-      content: (
+      title: isCustom ? "Force Update (custom script)" : "Force Update",
+      content: isCustom ? (
+        <div>
+          <p>
+            This runs your deploy script with <strong>DEPLOY_MODE=update</strong>, staging fresh ADDON + ADMIN
+            artifacts (even if version checks look up to date).
+          </p>
+          <p><strong>Use this if:</strong></p>
+          <ul>
+            <li>You changed the bundled addon-server build and need to redeploy</li>
+            <li>Gateway apps drifted and you want a full script-driven refresh</li>
+            <li>A previous update partially failed</li>
+          </ul>
+          <p style={{ marginTop: 12, color: "#faad14" }}>
+            <strong>Note:</strong> No automatic backup/rollback — recovery is owned by your Gateway script.
+          </p>
+        </div>
+      ) : (
         <div>
           <p>This will force reinstall all packages to the latest version, even if already up to date.</p>
           <p><strong>Use this if:</strong></p>
@@ -194,14 +352,32 @@ function Updates() {
       return;
     }
 
+    const customCount = addonsToUpdate.filter((id) => customScriptAddonIds.has(id)).length;
+    const classicCount = addonsToUpdate.length - customCount;
+
     Modal.confirm({
       title: forceUpdate ? "Force Update All Addons" : "Update All Addons",
       content: forceUpdate ? (
         <div>
-          <p>This will force reinstall all packages to the latest version for <strong>{addonsToUpdate.length}</strong> addon(s).</p>
-          <p style={{ marginTop: 12, color: "#faad14" }}>
-            <strong>Note:</strong> Backups will be created before each update.
+          <p>
+            This will update <strong>{addonsToUpdate.length}</strong> addon(s)
+            {customCount > 0 && classicCount > 0
+              ? ` (${classicCount} classic SSH, ${customCount} custom script)`
+              : customCount > 0
+                ? " via custom-script deploy"
+                : ""}.
           </p>
+          {classicCount > 0 && (
+            <p style={{ marginTop: 12, color: "#faad14" }}>
+              <strong>Classic:</strong> packages are reinstalled; backups are created before each update.
+            </p>
+          )}
+          {customCount > 0 && (
+            <p style={{ marginTop: 12, color: "#faad14" }}>
+              <strong>Custom script:</strong> runs DEPLOY_MODE=update with dual artifacts. No automatic
+              backup/rollback.
+            </p>
+          )}
         </div>
       ) : (
         `Are you sure you want to update ${addonsToUpdate.length} addon(s)?`
@@ -214,13 +390,21 @@ function Updates() {
             skipBackup: false,
             restartService: true,
             forceUpdate,
+            force: forceUpdate,
           });
 
           if (result.success) {
-            message.success(`All addons ${forceUpdate ? 'force ' : ''}updated successfully!`);
-            // Reload addon list from registry (to get updated versions)
+            const rows = Array.isArray(result.data) ? (result.data as Array<{ success?: boolean; error?: string; addonId?: string }>) : [];
+            const failed = rows.filter((r) => r && r.success === false);
+            if (failed.length > 0) {
+              message.warning(
+                `${rows.length - failed.length} succeeded, ${failed.length} failed. ` +
+                  (failed[0]?.error || "Check Updates for details.")
+              );
+            } else {
+              message.success(`All addons ${forceUpdate ? "force " : ""}updated successfully!`);
+            }
             await loadAddons();
-            // Then refresh the update info
             await checkAllUpdates();
           } else {
             message.error(result.error || "Batch update failed");
@@ -234,6 +418,22 @@ function Updates() {
   }
 
   async function handleRollback(addonId: string) {
+    try {
+      const configResult = await window.electron.config.load(addonId);
+      if (
+        configResult.success &&
+        configResult.data &&
+        isCustomScriptInstall(configResult.data as AddonManagerConfig)
+      ) {
+        message.warning(
+          "Rollback is not supported for custom_script installs. Use your Gateway/script recovery process."
+        );
+        return;
+      }
+    } catch {
+      // continue with classic rollback
+    }
+
     if (!window.electron?.update?.rollback) {
       message.error("Rollback API not available");
       return;
@@ -250,9 +450,7 @@ function Updates() {
 
           if (result.success) {
             message.success("Rollback successful!");
-            // Reload addon list from registry (to get updated version)
             await loadAddons();
-            // Then refresh the update info
             await checkAllUpdates();
           } else {
             message.error(result.error || "Rollback failed");
@@ -281,7 +479,7 @@ function Updates() {
       title: "Current Version",
       dataIndex: "currentVersion",
       key: "currentVersion",
-      render: (version?: string, record: AddonUpdateInfo) => {
+      render: (version: string | undefined, record: AddonUpdateInfo) => {
         if (!version || version === "N/A") {
           return (
             <Tooltip title="Version could not be detected. Use 'Force Update' to reinstall.">
@@ -299,7 +497,7 @@ function Updates() {
       title: "Latest Version",
       dataIndex: "latestVersion",
       key: "latestVersion",
-      render: (version?: string, record: AddonUpdateInfo) => (
+      render: (version: string | undefined, record: AddonUpdateInfo) => (
         <Space>
           <Text code>{version || "N/A"}</Text>
           {record.updateAvailable && (
@@ -340,7 +538,13 @@ function Updates() {
               Update
             </Button>
           )}
-          <Tooltip title="Force reinstall packages to latest version">
+          <Tooltip
+            title={
+              customScriptAddonIds.has(record.id)
+                ? "Run deploy script (DEPLOY_MODE=update) with dual artifacts"
+                : "Force reinstall packages to latest version"
+            }
+          >
             <Button
               size="small"
               icon={<FiRefreshCw />}
@@ -350,7 +554,9 @@ function Updates() {
               Force Update
             </Button>
           </Tooltip>
-          {record.updateHistory && record.updateHistory.length > 0 && (
+          {record.updateHistory &&
+            record.updateHistory.length > 0 &&
+            !customScriptAddonIds.has(record.id) && (
             <Tooltip title="Rollback to previous version">
               <Button
                 size="small"
@@ -359,6 +565,11 @@ function Updates() {
               >
                 Rollback
               </Button>
+            </Tooltip>
+          )}
+          {customScriptAddonIds.has(record.id) && (
+            <Tooltip title="Rollback is not supported for custom_script installs">
+              <Tag>No rollback</Tag>
             </Tooltip>
           )}
         </Space>
@@ -404,6 +615,15 @@ function Updates() {
           message="Update API Not Available"
           description="The update functionality is not available in development mode. Please run the app from built files to use this feature."
           showIcon
+        />
+      )}
+
+      {customScriptAddonIds.size > 0 && (
+        <Alert
+          type="info"
+          showIcon
+          message="Custom script updates"
+          description="Force Update runs your deploy script (DEPLOY_MODE=update) with dual artifacts. Scripts are fetched from managementUrl when reachable; otherwise the last stored script is used. If neither is available, you can paste/pick the script. Hash changes still require confirm. Rollback is not supported."
         />
       )}
 
@@ -477,7 +697,11 @@ function Updates() {
           </Text>
           <Text>
             <FiRotateCcw style={{ marginRight: 8 }} />
-            Backups are created automatically before each update. You can rollback if needed.
+            Backups are created automatically before each classic (SSH) update. You can rollback if needed.
+          </Text>
+          <Text type="secondary">
+            Custom script installs: updates run your deploy script (DEPLOY_MODE=update) with dual artifacts.
+            Rollback and remote→custom_script migrate are not supported yet.
           </Text>
         </Flex>
       </Card>

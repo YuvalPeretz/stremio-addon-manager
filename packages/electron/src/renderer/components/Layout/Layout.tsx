@@ -86,7 +86,9 @@ function Layout() {
         <Sider width={240} className={styles.sider}>
           <Menu
             mode="inline"
-            selectedKeys={[location.pathname]}
+            selectedKeys={
+              location.pathname.startsWith("/local-library/") ? [] : [location.pathname]
+            }
             items={menuItems}
             onClick={handleMenuClick}
             theme="dark"

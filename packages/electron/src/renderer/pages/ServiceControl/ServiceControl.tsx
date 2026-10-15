@@ -27,9 +27,10 @@ import {
   FiCheckCircle,
   FiXCircle,
 } from "react-icons/fi";
-import type { ServiceInfo, ServiceStatus } from "@stremio-addon-manager/core";
+import type { AddonManagerConfig, ServiceInfo } from "@stremio-addon-manager/core";
 import { serviceStatusAtom } from "../../atoms/serviceAtoms";
 import { selectedAddonIdAtom } from "../../atoms/addonAtoms";
+import { isCustomScriptInstall } from "../../utils/addonUrls";
 import styles from "./ServiceControl.module.scss";
 
 const { Title, Text } = Typography;
@@ -41,26 +42,41 @@ function ServiceControl() {
   const [refreshing, setRefreshing] = useState(false);
   const [autoStartEnabled, setAutoStartEnabled] = useState(false);
   const [serviceInfo, setServiceInfo] = useState<ServiceInfo | null>(null);
+  const [isCustomScript, setIsCustomScript] = useState(false);
 
   useEffect(() => {
-    loadServiceStatus();
-    // Poll service status every 5 seconds
-    const interval = setInterval(loadServiceStatus, 5000);
+    void loadServiceStatus();
+    // Poll service status every 5 seconds (skipped for custom_script)
+    const interval = setInterval(() => {
+      void loadServiceStatus();
+    }, 5000);
     return () => clearInterval(interval);
   }, [selectedAddonId]);
 
   async function loadServiceStatus() {
     setRefreshing(true);
-    const result = await window.electron.service.status(undefined, selectedAddonId || undefined);
-    setRefreshing(false);
+    try {
+      const configResult = await window.electron.config.load(selectedAddonId || undefined);
+      const custom =
+        Boolean(configResult.success && configResult.data) &&
+        isCustomScriptInstall(configResult.data as AddonManagerConfig);
+      setIsCustomScript(custom);
+      if (custom) {
+        setServiceInfo(null);
+        return;
+      }
 
-    if (result.success && result.data) {
-      const data = result.data as ServiceInfo;
-      setServiceInfo(data);
-      setServiceStatus(data);
-      setAutoStartEnabled(data.enabled);
-    } else {
-      message.error("Failed to load service status");
+      const result = await window.electron.service.status(undefined, selectedAddonId || undefined);
+      if (result.success && result.data) {
+        const data = result.data as ServiceInfo;
+        setServiceInfo(data);
+        setServiceStatus(data);
+        setAutoStartEnabled(data.enabled);
+      } else {
+        message.error("Failed to load service status");
+      }
+    } finally {
+      setRefreshing(false);
     }
   }
 
@@ -178,6 +194,57 @@ function ServiceControl() {
     }
   }
 
+  if (isCustomScript) {
+    return (
+      <Flex vertical gap={24} className={styles.serviceControl}>
+        <Title level={2}>
+          Service Control
+          {selectedAddonId && (
+            <Text type="secondary" style={{ fontSize: "14px", fontWeight: "normal", marginLeft: 12 }}>
+              ({selectedAddonId})
+            </Text>
+          )}
+        </Title>
+        <Alert
+          type="info"
+          showIcon
+          message="Not available for custom_script installs"
+          description="Start/stop/restart and systemd auto-start are owned by your Gateway deploy script. Use Dashboard publicUrl health, Logs (admin managementUrl), and Configuration → Save (DEPLOY_MODE=config) instead."
+        />
+        <Card title="Quick Actions">
+          <Space direction="vertical" style={{ width: "100%" }}>
+            <Flex justify="space-between" align="center">
+              <div>
+                <Text strong>Dashboard</Text>
+                <br />
+                <Text type="secondary">Check publicUrl health and Stremio install links</Text>
+              </div>
+              <Button onClick={() => { window.location.hash = "#/dashboard"; }}>Go to Dashboard</Button>
+            </Flex>
+            <Flex justify="space-between" align="center">
+              <div>
+                <Text strong>Admin Logs</Text>
+                <br />
+                <Text type="secondary">Fetch logs from managementUrl</Text>
+              </div>
+              <Button onClick={() => { window.location.hash = "#/logs"; }}>Go to Logs</Button>
+            </Flex>
+            <Flex justify="space-between" align="center">
+              <div>
+                <Text strong>Configuration</Text>
+                <br />
+                <Text type="secondary">Apply env via deploy script</Text>
+              </div>
+              <Button onClick={() => { window.location.hash = "#/configuration"; }}>
+                Go to Configuration
+              </Button>
+            </Flex>
+          </Space>
+        </Card>
+      </Flex>
+    );
+  }
+
   return (
     <Flex vertical gap={24} className={styles.serviceControl}>
       <Flex justify="space-between" align="center">
@@ -191,7 +258,7 @@ function ServiceControl() {
         </Title>
         <Button
           icon={<FiRotateCw className={refreshing ? styles.spinning : ""} />}
-          onClick={loadServiceStatus}
+          onClick={() => void loadServiceStatus()}
           disabled={refreshing}
         >
           Refresh

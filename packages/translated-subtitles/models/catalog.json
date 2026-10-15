@@ -1,0 +1,61 @@
+{
+  "defaultModelId": "qwen3-1.7b-q4_k_m",
+  "models": [
+    {
+      "id": "qwen3-0.6b-q4_k_m",
+      "displayName": "Qwen3-0.6B",
+      "tier": "ultra-light",
+      "recommended": false,
+      "experimental": true,
+      "filename": "Qwen_Qwen3-0.6B-Q4_K_M.gguf",
+      "url": "https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUF/resolve/main/Qwen_Qwen3-0.6B-Q4_K_M.gguf",
+      "expectedBytes": 484220320,
+      "sha256": "9acfc1e001311f34b4252001b626f2e466d592a42065f66571bff3790d4e1b14",
+      "ramBlurb": "~2 GB RAM",
+      "hwBlurb": "Pi 4 4GB / tight hosts",
+      "qualityBlurb": "Ultra-light · experimental quality — weak on context and names"
+    },
+    {
+      "id": "qwen3-1.7b-q4_k_m",
+      "displayName": "Qwen3-1.7B",
+      "tier": "light",
+      "recommended": true,
+      "experimental": false,
+      "filename": "Qwen_Qwen3-1.7B-Q4_K_M.gguf",
+      "url": "https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q4_K_M.gguf",
+      "expectedBytes": 1282439584,
+      "sha256": "72c5c3cb38fa32d5256e2fe30d03e7a64c6c79e668ad84057e3bd66e250b24fb",
+      "ramBlurb": "~3 GB RAM",
+      "hwBlurb": "Pi 4/5 4–8GB, small NUCs",
+      "qualityBlurb": "Light · recommended minimum — usable multilingual cue translation"
+    },
+    {
+      "id": "gemma3-1b-q4_k_m",
+      "displayName": "Gemma 3 1B",
+      "tier": "light-alt",
+      "recommended": false,
+      "experimental": false,
+      "filename": "google_gemma-3-1b-it-Q4_K_M.gguf",
+      "url": "https://huggingface.co/bartowski/google_gemma-3-1b-it-GGUF/resolve/main/google_gemma-3-1b-it-Q4_K_M.gguf",
+      "expectedBytes": 806058496,
+      "sha256": "12bf0fff8815d5f73a3c9b586bd8fee8e7b248c935de70dec367679873d0f29d",
+      "ramBlurb": "~2 GB RAM",
+      "hwBlurb": "Pi 5 4GB+",
+      "qualityBlurb": "Light alt · weaker multilingual than Qwen for non-English"
+    },
+    {
+      "id": "qwen3-4b-q4_k_m",
+      "displayName": "Qwen3-4B",
+      "tier": "balanced",
+      "recommended": false,
+      "experimental": false,
+      "filename": "Qwen_Qwen3-4B-Q4_K_M.gguf",
+      "url": "https://huggingface.co/bartowski/Qwen_Qwen3-4B-GGUF/resolve/main/Qwen_Qwen3-4B-Q4_K_M.gguf",
+      "expectedBytes": 2497280960,
+      "sha256": "fbe1d5edd4ce802ae3ae7c7e4ab7d09789d697fdac1fc7929f8df4ca3c41bae3",
+      "ramBlurb": "~5 GB RAM",
+      "hwBlurb": "Pi 5 8GB / 8GB+ PC",
+      "qualityBlurb": "Balanced · better context and idioms; slower first-load"
+    }
+  ]
+}

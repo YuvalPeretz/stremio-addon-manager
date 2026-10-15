@@ -6,11 +6,28 @@
 import { useEffect, useState } from "react";
 import { useAtom } from "jotai";
 import { Card, Flex, Typography, Button, Tag, Spin, Alert, Modal, Progress, message } from "antd";
-import { FiPlay, FiPause, FiRotateCw, FiDownload, FiSettings, FiTrash2, FiActivity } from "react-icons/fi";
+import {
+  FiPlay,
+  FiPause,
+  FiRotateCw,
+  FiDownload,
+  FiSettings,
+  FiTrash2,
+  FiActivity,
+  FiFolder,
+} from "react-icons/fi";
 import { useNavigate } from "react-router-dom";
 import { configAtom, configExistsAtom } from "../../atoms/configAtoms";
 import { serviceStatusAtom, serviceLoadingAtom } from "../../atoms/serviceAtoms";
 import { selectedAddonIdAtom, selectedAddonAtom } from "../../atoms/addonAtoms";
+import {
+  buildManifestUrl,
+  buildManagementUrl,
+  buildPartyUrl,
+  getPublicBaseUrl,
+  isCustomScriptInstall,
+  joinBaseUrl,
+} from "../../utils/addonUrls";
 import styles from "./Dashboard.module.scss";
 
 const { Title, Text, Paragraph } = Typography;
@@ -38,6 +55,11 @@ function Dashboard() {
   const [partyProgressMsg, setPartyProgressMsg] = useState("");
   const [partyDiagnosing, setPartyDiagnosing] = useState(false);
   const [partyDiagnosisResult, setPartyDiagnosisResult] = useState<string | null>(null);
+  const [publicHealth, setPublicHealth] = useState<"unknown" | "healthy" | "unhealthy">("unknown");
+  const [publicHealthDetail, setPublicHealthDetail] = useState<string | null>(null);
+  const [publicHealthChecking, setPublicHealthChecking] = useState(false);
+
+  const isCustomScript = Boolean(config && isCustomScriptInstall(config));
 
   useEffect(() => {
     checkMigration();
@@ -45,6 +67,15 @@ function Dashboard() {
     loadServiceStatus();
     loadPartyStatus();
   }, [selectedAddonId]);
+
+  useEffect(() => {
+    if (config && isCustomScriptInstall(config)) {
+      void checkPublicHealth();
+    } else {
+      setPublicHealth("unknown");
+      setPublicHealthDetail(null);
+    }
+  }, [config, selectedAddonId]);
 
   useEffect(() => {
     if (!partyInstalling) return;
@@ -104,14 +135,84 @@ function Dashboard() {
 
   async function loadServiceStatus() {
     setServiceLoading(true);
-    const result = await window.electron.service.status(undefined, selectedAddonId || undefined);
-    setServiceLoading(false);
-    if (result.success) {
-      setServiceStatus(result.data as any);
+    try {
+      const configResult = await window.electron.config.load(selectedAddonId || undefined);
+      if (
+        configResult.success &&
+        configResult.data &&
+        isCustomScriptInstall(configResult.data as Parameters<typeof isCustomScriptInstall>[0])
+      ) {
+        setServiceStatus({ status: "active", enabled: false } as any);
+        return;
+      }
+      const result = await window.electron.service.status(undefined, selectedAddonId || undefined);
+      if (result.success) {
+        setServiceStatus(result.data as any);
+      }
+    } finally {
+      setServiceLoading(false);
+    }
+  }
+
+  async function checkPublicHealth() {
+    if (!config) return;
+    const base = getPublicBaseUrl(config);
+    if (!base) {
+      setPublicHealth("unhealthy");
+      setPublicHealthDetail("No publicUrl or domain configured");
+      return;
+    }
+    setPublicHealthChecking(true);
+    setPublicHealthDetail(null);
+    try {
+      const healthPath = config.installation?.customScript?.healthPath?.trim() || "/health";
+      const healthResult = await window.electron.server.getHealth({
+        url: base,
+        healthPath,
+      });
+      const data = healthResult.data as
+        | { status?: string; errors?: string[]; uptime?: number }
+        | undefined;
+      const status = data?.status;
+
+      if (healthResult.success && (status === "healthy" || status === "degraded")) {
+        setPublicHealth("healthy");
+        setPublicHealthDetail(
+          status === "degraded"
+            ? "Degraded"
+            : typeof data?.uptime === "number"
+              ? `Uptime ${Math.floor(data.uptime)}s`
+              : null
+        );
+      } else {
+        setPublicHealth("unhealthy");
+        const errFromIpc =
+          typeof healthResult.error === "string"
+            ? healthResult.error
+            : healthResult.error &&
+                typeof healthResult.error === "object" &&
+                "message" in healthResult.error
+              ? String((healthResult.error as { message?: unknown }).message)
+              : null;
+        setPublicHealthDetail(
+          errFromIpc ||
+            data?.errors?.[0] ||
+            (status ? `Unexpected status: ${status}` : `Failed probing ${joinBaseUrl(base, healthPath)}`)
+        );
+      }
+    } catch (error) {
+      setPublicHealth("unhealthy");
+      setPublicHealthDetail(error instanceof Error ? error.message : "Health check failed");
+    } finally {
+      setPublicHealthChecking(false);
     }
   }
 
   async function handleServiceAction(action: "start" | "stop" | "restart") {
+    if (isCustomScript) {
+      message.info("Start/stop/restart are managed by your Gateway deploy script for custom-script installs.");
+      return;
+    }
     setServiceLoading(true);
     await window.electron.service[action](undefined, selectedAddonId || undefined);
     await loadServiceStatus();
@@ -129,12 +230,20 @@ function Dashboard() {
   }
 
   async function handleInstallParty() {
-    if (!config?.addon?.domain || !config?.addon?.password) {
-      message.error("Addon domain and password are required to install the party server");
+    if (!config?.addon?.password) {
+      message.error("Addon password is required to install the party server");
       return;
     }
 
-    const addonUrl = `https://${config.addon.domain}/${config.addon.password}`;
+    const publicBase = getPublicBaseUrl(config);
+    if (!publicBase && !config.addon.domain) {
+      message.error("Addon public URL or domain is required to install the party server");
+      return;
+    }
+
+    const addonUrl = publicBase
+      ? joinBaseUrl(publicBase, config.addon.password)
+      : `https://${config.addon.domain}/${config.addon.password}`;
 
     setPartyInstalling(true);
     setPartyProgress(0);
@@ -250,6 +359,15 @@ function Dashboard() {
     );
   }
 
+  const manifestUrl = config ? buildManifestUrl(config) : null;
+  const managementPageUrl = config ? buildManagementUrl(config) : null;
+  const partyDisplayUrl = config
+    ? buildPartyUrl(config, selectedAddon?.domain)
+    : selectedAddon?.domain
+      ? `https://${selectedAddon.domain}/party`
+      : null;
+  const publicBaseFallback = config ? getPublicBaseUrl(config) : null;
+
   return (
     <Flex vertical gap={24} className={styles.dashboard}>
       <Flex justify="space-between" align="center">
@@ -261,48 +379,91 @@ function Dashboard() {
         )}
       </Flex>
 
-      {/* Service Status Card */}
+      {/* Service Status Card — SSH lifecycle hidden for custom_script */}
       <Card
-        title="Service Status"
+        title={isCustomScript ? "Public URL Health" : "Service Status"}
         extra={
-          <Button icon={<FiRotateCw />} onClick={loadServiceStatus}>
+          <Button
+            icon={<FiRotateCw />}
+            onClick={() => (isCustomScript ? void checkPublicHealth() : void loadServiceStatus())}
+          >
             Refresh
           </Button>
         }
       >
-        <Spin spinning={serviceLoading}>
+        <Spin spinning={isCustomScript ? publicHealthChecking : serviceLoading}>
           <Flex vertical gap={16}>
-            <Flex justify="space-between" align="center">
-              <Text>Status</Text>
-              <Tag color={getStatusColor(serviceStatus?.status)}>
-                {serviceStatus?.status?.toUpperCase() || "UNKNOWN"}
-              </Tag>
-            </Flex>
-            <Flex justify="space-between" align="center">
-              <Text>Auto-start</Text>
-              <Tag color={serviceStatus?.enabled ? "success" : "default"}>
-                {serviceStatus?.enabled ? "ENABLED" : "DISABLED"}
-              </Tag>
-            </Flex>
-            <Flex gap={8}>
-              <Button
-                icon={<FiPlay />}
-                onClick={() => handleServiceAction("start")}
-                disabled={serviceStatus?.status === "active"}
-              >
-                Start
-              </Button>
-              <Button
-                icon={<FiPause />}
-                onClick={() => handleServiceAction("stop")}
-                disabled={serviceStatus?.status !== "active"}
-              >
-                Stop
-              </Button>
-              <Button icon={<FiRotateCw />} onClick={() => handleServiceAction("restart")}>
-                Restart
-              </Button>
-            </Flex>
+            {isCustomScript ? (
+              <>
+                <Flex justify="space-between" align="center">
+                  <Text>publicUrl</Text>
+                  <Tag
+                    color={
+                      publicHealth === "healthy"
+                        ? "success"
+                        : publicHealth === "unhealthy"
+                          ? "error"
+                          : "default"
+                    }
+                  >
+                    {publicHealth.toUpperCase()}
+                  </Tag>
+                </Flex>
+                {config && getPublicBaseUrl(config) && (
+                  <Text copyable type="secondary">
+                    {getPublicBaseUrl(config)}
+                  </Text>
+                )}
+                {publicHealthDetail && (
+                  <Text
+                    type={publicHealth === "unhealthy" ? "danger" : "secondary"}
+                    style={{ fontSize: 12 }}
+                  >
+                    {publicHealthDetail}
+                  </Text>
+                )}
+                <Alert
+                  type="info"
+                  showIcon
+                  message="Custom script install"
+                  description="Start/stop/restart and journalctl are not available here — lifecycle is owned by your Gateway deploy script. Rollback is unsupported for custom_script."
+                />
+              </>
+            ) : (
+              <>
+                <Flex justify="space-between" align="center">
+                  <Text>Status</Text>
+                  <Tag color={getStatusColor(serviceStatus?.status)}>
+                    {serviceStatus?.status?.toUpperCase() || "UNKNOWN"}
+                  </Tag>
+                </Flex>
+                <Flex justify="space-between" align="center">
+                  <Text>Auto-start</Text>
+                  <Tag color={serviceStatus?.enabled ? "success" : "default"}>
+                    {serviceStatus?.enabled ? "ENABLED" : "DISABLED"}
+                  </Tag>
+                </Flex>
+                <Flex gap={8}>
+                  <Button
+                    icon={<FiPlay />}
+                    onClick={() => handleServiceAction("start")}
+                    disabled={serviceStatus?.status === "active"}
+                  >
+                    Start
+                  </Button>
+                  <Button
+                    icon={<FiPause />}
+                    onClick={() => handleServiceAction("stop")}
+                    disabled={serviceStatus?.status !== "active"}
+                  >
+                    Stop
+                  </Button>
+                  <Button icon={<FiRotateCw />} onClick={() => handleServiceAction("restart")}>
+                    Restart
+                  </Button>
+                </Flex>
+              </>
+            )}
           </Flex>
         </Spin>
       </Card>
@@ -344,7 +505,7 @@ function Dashboard() {
                 </Flex>
                 <Flex justify="space-between">
                   <Text strong>SSL Enabled</Text>
-                  <Tag color={config.features.ssl ? "success" : "default"}>{config.features.ssl ? "YES" : "NO"}</Tag>
+                  <Tag color={config.features?.ssl ? "success" : "default"}>{config.features?.ssl ? "YES" : "NO"}</Tag>
                 </Flex>
               </>
             )}
@@ -352,8 +513,18 @@ function Dashboard() {
         </Card>
       )}
 
-      {/* Party Server Card */}
-      {(config || selectedAddon) && (
+      {/* Party Server Card — unsupported for custom_script */}
+      {(config || selectedAddon) && isCustomScript && (
+        <Card title="Party Viewing Server">
+          <Alert
+            type="warning"
+            showIcon
+            message="Party deploy unsupported for custom script"
+            description="Party server install via SSH is not supported for custom_script addons yet. If needed, inject PARTY_* in your Gateway script and manage both apps yourself."
+          />
+        </Card>
+      )}
+      {(config || selectedAddon) && !isCustomScript && (
         <Card title="Party Viewing Server">
           {partyStatus.installed && !partyInstalling ? (
             <Flex vertical gap={12}>
@@ -371,7 +542,7 @@ function Dashboard() {
               )}
               <Flex justify="space-between">
                 <Text>Party URL</Text>
-                <Text copyable>{`https://${config?.addon?.domain || selectedAddon?.domain}/party`}</Text>
+                <Text copyable>{partyDisplayUrl || `https://${selectedAddon?.domain}/party`}</Text>
               </Flex>
               <Flex gap={8} wrap="wrap">
                 <Button icon={<FiRotateCw />} onClick={handleInstallParty} disabled={partyRemoving || partyDiagnosing}>
@@ -416,28 +587,61 @@ function Dashboard() {
 
       {/* Quick Actions Card */}
       <Card title="Quick Actions">
-        <Flex gap={8}>
+        <Flex gap={8} wrap="wrap">
           <Button icon={<FiSettings />} onClick={() => navigate("/configuration")}>
             Configuration
           </Button>
           <Button onClick={() => navigate("/logs")}>View Logs</Button>
+          <Button
+            icon={<FiFolder />}
+            disabled={!selectedAddonId}
+            onClick={() =>
+              selectedAddonId &&
+              navigate(`/local-library/${encodeURIComponent(selectedAddonId)}`)
+            }
+          >
+            Local Library
+          </Button>
         </Flex>
+        {!selectedAddonId ? (
+          <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
+            Select an addon in the header to open Local Library for that addon.
+          </Paragraph>
+        ) : (
+          <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
+            Local Library uses this addon’s public URL (or domain) and password (same as Stremio). It is not a global page.
+          </Paragraph>
+        )}
       </Card>
 
-      {/* Install URL */}
-      {serviceStatus?.status === "active" && (config || selectedAddon) && (
+      {/* Install URL — show for active service or healthy custom_script publicUrl */}
+      {((!isCustomScript && serviceStatus?.status === "active") ||
+        (isCustomScript && (publicHealth === "healthy" || publicHealth === "unknown"))) &&
+        (config || selectedAddon) && (
         <Alert
           message="Addon URL"
           description={
             <Flex vertical gap={8}>
-              {config?.addon?.password ? (
-                <Paragraph copyable style={{ margin: 0 }}>
-                  {`https://${config.addon.domain}/${config.addon.password}/manifest.json`}
-                </Paragraph>
+              {manifestUrl ? (
+                <>
+                  <Paragraph copyable style={{ margin: 0 }}>
+                    {manifestUrl}
+                  </Paragraph>
+                  {managementPageUrl && (
+                    <Paragraph copyable style={{ margin: "8px 0 0" }} type="secondary">
+                      {managementPageUrl}
+                    </Paragraph>
+                  )}
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {isCustomScript
+                      ? "Private admin management UI (managementUrl) — request log / cache remake; not the public Stremio base"
+                      : "Management (request log, cache remake) — open in a browser"}
+                  </Text>
+                </>
               ) : (
                 <>
                   <Paragraph copyable style={{ margin: 0 }}>
-                    {`https://${selectedAddon?.domain}/[password]/manifest.json`}
+                    {`${publicBaseFallback || `https://${selectedAddon?.domain}`}/[password]/manifest.json`}
                   </Paragraph>
                   <Text type="warning" style={{ fontSize: 12 }}>
                     Replace [password] with your actual addon password

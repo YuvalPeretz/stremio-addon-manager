@@ -1,0 +1,19 @@
+.editor {
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: #282c34;
+
+  :global(.cm-editor) {
+    outline: none;
+  }
+
+  :global(.cm-editor.cm-focused) {
+    outline: 1px solid rgba(22, 119, 255, 0.55);
+  }
+
+  :global(.cm-placeholder) {
+    color: rgba(255, 255, 255, 0.35);
+    font-style: italic;
+  }
+}

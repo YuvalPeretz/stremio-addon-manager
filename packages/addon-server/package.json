@@ -1,16 +1,26 @@
 {
   "name": "@stremio-addon-manager/addon-server",
   "version": "1.0.0",
+  "private": true,
+  "description": "Stremio addon HTTP server (streams, management UI, local library)",
   "type": "module",
   "main": "dist/index.js",
+  "files": [
+    "dist",
+    "bin",
+    "management",
+    "landing.html"
+  ],
   "bin": {
     "stremio-addon-server": "./bin/server.js"
   },
   "scripts": {
-    "build": "tsc --build",
+    "build": "tsc --build && node ./scripts/copy-management-assets.mjs",
     "dev": "tsc --build --watch",
     "start": "node dist/index.js",
-    "clean": "rimraf dist .tsbuildinfo"
+    "clean": "rimraf dist .tsbuildinfo",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "stremio-addon-sdk": "^1.6.10",

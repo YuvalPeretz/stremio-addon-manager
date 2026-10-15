@@ -7,6 +7,11 @@ import { loadConfig } from "./config.js";
 import { RealDebridClient } from "./real-debrid.js";
 import { CacheManager } from "./cache.js";
 import { createServer } from "./server.js";
+import { LocalLibraryManager } from "./local-library/manager.js";
+import { installServerLogCapture } from "./management/server-log.js";
+
+// Capture console output for the management Logs tab (before any server logging).
+installServerLogCapture();
 
 /**
  * Start the addon server
@@ -14,6 +19,7 @@ import { createServer } from "./server.js";
 function startServer(): void {
   // Load configuration
   const config = loadConfig();
+  installServerLogCapture(config);
 
   console.log("\n🚀 Starting Stremio Addon Server...\n");
   console.log("Configuration:");
@@ -37,8 +43,10 @@ function startServer(): void {
   const rdClient = new RealDebridClient(config);
   const cacheManager = new CacheManager(config);
 
+  const localLibrary = new LocalLibraryManager(config);
+
   // Create Express server
-  const app = createServer(config, rdClient, cacheManager);
+  const app = createServer(config, rdClient, cacheManager, localLibrary);
 
   // Log cache stats every 10 minutes
   setInterval(() => {
@@ -62,6 +70,15 @@ function startServer(): void {
     } else {
       console.log(`\n⚠️  Warning: Authentication is disabled!`);
       console.log(`   Set ADDON_PASSWORD environment variable to enable authentication`);
+    }
+
+    if (config.enableManagementApi) {
+      console.log(`\n🛠  Management API enabled (ENABLE_MANAGEMENT_API=true)`);
+      console.log(`  - UI: /:password/management`);
+      console.log(`  - Deploy scripts: /:password/management/api/deploy/scripts`);
+      console.log(`  - Config (redacted): /:password/management/api/config`);
+    } else {
+      console.log(`\n🛠  Management API disabled (public streaming; set ENABLE_MANAGEMENT_API=true on admin)`);
     }
 
     console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");

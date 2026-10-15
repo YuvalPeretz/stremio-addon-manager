@@ -6,6 +6,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useAtom } from "jotai";
 import {
+  Alert,
   Card,
   Flex,
   Typography,
@@ -27,6 +28,8 @@ import {
 } from "react-icons/fi";
 import { serviceLogsAtom } from "../../atoms/serviceAtoms";
 import { selectedAddonIdAtom } from "../../atoms/addonAtoms";
+import { getManagementBaseUrl, isCustomScriptInstall } from "../../utils/addonUrls";
+import type { AddonManagerConfig } from "@stremio-addon-manager/core";
 import styles from "./Logs.module.scss";
 
 const { Title, Text } = Typography;
@@ -48,6 +51,7 @@ function Logs() {
   const [logLevel, setLogLevel] = useState<LogLevel>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [parsedLogs, setParsedLogs] = useState<LogEntry[]>([]);
+  const [isCustomScript, setIsCustomScript] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const logsContainerRef = useRef<HTMLDivElement>(null);
 
@@ -99,11 +103,41 @@ function Logs() {
 
   async function loadLogs() {
     setLoading(true);
-    const result = await window.electron.service.getLogs(undefined, undefined, selectedAddonId || undefined);
-    setLoading(false);
+    try {
+      const configResult = await window.electron.config.load(selectedAddonId || undefined);
+      const cfg = configResult.success ? (configResult.data as AddonManagerConfig) : null;
 
-    if (result.success && result.data) {
-      setLogs(result.data as string);
+      if (cfg && isCustomScriptInstall(cfg) && window.electron.customScript?.fetchLogs) {
+        setIsCustomScript(true);
+        const managementUrl = getManagementBaseUrl(cfg);
+        const password = cfg.addon?.password;
+        if (!managementUrl || !password) {
+          message.warning("Custom script: managementUrl / password missing — cannot load admin logs.");
+          setLogs("");
+          return;
+        }
+        const result = await window.electron.customScript.fetchLogs(managementUrl, password, 400);
+        if (result.success && result.data?.lines) {
+          setLogs(result.data.lines.join("\n"));
+        } else {
+          message.error(`Failed to load management logs: ${result.error || "Unknown error"}`);
+        }
+        return;
+      }
+
+      setIsCustomScript(false);
+      const result = await window.electron.service.getLogs(undefined, undefined, selectedAddonId || undefined);
+      if (result.success && result.data) {
+        setLogs(result.data as string);
+      } else if (result.success && !result.data) {
+        setLogs("");
+      } else {
+        message.error(`Failed to load logs: ${result.error || "Unknown error"}`);
+      }
+    } catch (err) {
+      message.error(`Failed to load logs: ${(err as Error).message}`);
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -132,6 +166,14 @@ function Logs() {
   }
 
   function handleClearLogs() {
+    if (isCustomScript) {
+      message.info(
+        "Clear is not available for custom_script admin logs fetched from managementUrl. Clear the view locally instead."
+      );
+      setLogs("");
+      setParsedLogs([]);
+      return;
+    }
     Modal.confirm({
       title: "Clear Logs",
       content: "Are you sure you want to clear all logs? This action cannot be undone.",
@@ -203,7 +245,7 @@ function Logs() {
     <Flex vertical gap={24} className={styles.logs}>
       <Flex justify="space-between" align="center">
         <Title level={2}>
-          Service Logs
+          {isCustomScript ? "Admin Logs" : "Service Logs"}
           {selectedAddonId && (
             <Text type="secondary" style={{ fontSize: "14px", fontWeight: "normal", marginLeft: 12 }}>
               ({selectedAddonId})
@@ -218,6 +260,15 @@ function Logs() {
           </Button>
         </Space>
       </Flex>
+
+      {isCustomScript && (
+        <Alert
+          type="info"
+          showIcon
+          message="Custom script — admin logs"
+          description="These are logs from the private admin app (managementUrl), not the public streaming journal. Public stream logs are off on the WAN instance by design."
+        />
+      )}
 
       {/* Filters and Actions */}
       <Card>

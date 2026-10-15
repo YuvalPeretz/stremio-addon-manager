@@ -3,8 +3,9 @@
  */
 
 import { ConfigProvider, theme } from "antd";
-import { Provider as JotaiProvider } from "jotai";
+import { Provider as JotaiProvider, useAtom } from "jotai";
 import { Routes, Route, Navigate } from "react-router-dom";
+import { selectedAddonIdAtom } from "./atoms/addonAtoms";
 import Layout from "./components/Layout/Layout";
 import Dashboard from "./pages/Dashboard/Dashboard";
 import Installation from "./pages/Installation/Installation";
@@ -15,8 +16,17 @@ import Connect from "./pages/Connect/Connect";
 import AddonManagement from "./pages/AddonManagement/AddonManagement";
 import EnvironmentVariables from "./pages/EnvironmentVariables/EnvironmentVariables";
 import Updates from "./pages/Updates/Updates";
+import LocalLibrary from "./pages/LocalLibrary/LocalLibrary";
 import { UpdateDialog } from "./components/UpdateDialog/UpdateDialog";
 import { UpdateNotification } from "./components/UpdateNotification/UpdateNotification";
+
+function LocalLibraryIndexRedirect() {
+  const [addonId] = useAtom(selectedAddonIdAtom);
+  if (addonId) {
+    return <Navigate to={`/local-library/${encodeURIComponent(addonId)}`} replace />;
+  }
+  return <Navigate to="/dashboard" replace />;
+}
 
 function App() {
   return (
@@ -60,6 +70,8 @@ function App() {
             <Route path="connect" element={<Connect />} />
             <Route path="installation" element={<Installation />} />
             <Route path="addons" element={<AddonManagement />} />
+            <Route path="local-library/:addonId" element={<LocalLibrary />} />
+            <Route path="local-library" element={<LocalLibraryIndexRedirect />} />
             <Route path="configuration" element={<Configuration />} />
             <Route path="environment-variables" element={<EnvironmentVariables />} />
             <Route path="service" element={<ServiceControl />} />
