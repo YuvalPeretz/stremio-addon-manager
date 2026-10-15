@@ -33,7 +33,8 @@ function ModelTierStep({ value, onChange, onNext, onBack }: ModelTierStepProps) 
         <Title level={4}>Translation model</Title>
         <Text type="secondary">
           Weights download on the target machine (not inside this app). Qwen3-1.7B is the recommended
-          minimum. Ultra-light 0.6B runs on tight hosts but is experimental.
+          minimum. NLLB-200 is a fast literal machine-translation engine (not an LLM). Ultra-light 0.6B
+          runs on tight hosts but is experimental.
         </Text>
       </Flex>
 
@@ -90,6 +91,7 @@ function ModelCard({
             <Tag>{entry.tier}</Tag>
             {entry.recommended && <Tag color="blue">Recommended minimum</Tag>}
             {entry.experimental && <Tag color="orange">Experimental</Tag>}
+            {entry.engine === "mt" && <Tag color="purple">Not an LLM</Tag>}
           </Flex>
           <Text type="secondary">
             {entry.ramBlurb} · {entry.qualityBlurb}

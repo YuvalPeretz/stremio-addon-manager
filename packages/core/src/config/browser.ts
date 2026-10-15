@@ -12,12 +12,14 @@ export {
   TRANSLATED_SUBTITLES_DEFAULT_PORT,
 } from "./product.js";
 
-export type { LlmModelCatalogEntry } from "./llm-model-catalog.js";
+export type { LlmModelCatalogEntry, CatalogEngine } from "./llm-model-catalog.js";
 export {
   LLM_MODEL_CATALOG,
   DEFAULT_LLM_MODEL_ID,
   getLlmModelCatalogEntry,
   resolveLlmModelCatalogEntry,
+  catalogEngine,
+  engineSwitchConfirmCopy,
   llmModelWizardCopy,
 } from "./llm-model-catalog.js";
 

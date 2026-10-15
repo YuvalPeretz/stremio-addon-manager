@@ -9,11 +9,18 @@
 #
 # Public container should mount:
 #   LLM_MODELS_DIR (e.g. /data/models)
+#   MT_MODELS_DIR (e.g. /data/models/nllb)
 #   subtitle cache (SUBTITLE_CACHE_DIR)
-# Admin does not need a second LLM sidecar.
+# Admin does not need a second LLM or NLLB sidecar.
+#
+# The public image must provide Python 3 + ctranslate2 + sentencepiece (for in-app
+# mt-sidecar/server.py), OR a sibling already healthy at MT_SERVER_URL
+# (default http://127.0.0.1:8082). Same attach-or-spawn pattern as llama-server.
 #
 # On install/update: if LLM_MODEL_PATH is unset, download LLM_MODEL_URL from $ADDON_ENV
 # into LLM_MODELS_DIR / LLM_MODEL_FILENAME and verify size/hash before health checks.
+# For NLLB (LLM_MODEL_ID=nllb-200-distilled-600m-int8), download the CT2 directory
+# into MT_MODELS_DIR / MT_MODEL_DIR instead — do not start llama.
 #
 # Electron always injects these into the script process (secret-free body — secrets via ADDON_ENV):
 #   DEPLOY_MODE=install|update|config
@@ -189,10 +196,10 @@ case "$DEPLOY_MODE" in
       compose_up "$ADMIN_UID"
     fi
     compose_up "$PUBLIC_UID"
-    # If llama is a sibling service (LLM_SERVER_URL=http://llama:8081), restart it after
-    # rewriting .env so it releases the old GGUF mmap and loads the new file.
+    # If llama or NLLB is a sibling service (LLM_SERVER_URL / MT_SERVER_URL), restart it after
+    # rewriting .env so mmap releases the old files and the active engine loads.
     log "done config apply for public stack $PUBLIC_UID (addon=$ADDON_ID product=$PRODUCT)"
-    log "if llama is a sibling container, restart that service so a model switch takes effect"
+    log "if llama or nllb is a sibling container, restart that service so a model/engine switch takes effect"
     ;;
 
   *)

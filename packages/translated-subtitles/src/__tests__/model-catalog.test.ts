@@ -27,20 +27,30 @@ describe("model catalog", () => {
     expect(entry.recommended).toBe(true);
   });
 
-  it("lists four hardware tiers with blurbs", () => {
+  it("lists GGUF tiers plus NLLB", () => {
     const ids = getModelCatalog().map((m) => m.id);
     expect(ids).toEqual([
       "qwen3-0.6b-q4_k_m",
       "qwen3-1.7b-q4_k_m",
       "gemma3-1b-q4_k_m",
       "qwen3-4b-q4_k_m",
+      "nllb-200-distilled-600m-int8",
     ]);
     for (const model of getModelCatalog()) {
       expect(model.hwBlurb.length).toBeGreaterThan(0);
       expect(model.ramBlurb.length).toBeGreaterThan(0);
       expect(model.url.startsWith("https://huggingface.co/")).toBe(true);
-      expect(model.filename.endsWith(".gguf")).toBe(true);
     }
+  });
+
+  it("resolves NLLB as engine=mt", () => {
+    const entry = requireModelById("nllb-200-distilled-600m-int8");
+    expect(entry.engine).toBe("mt");
+    expect(entry.filename).toBe("nllb-200-distilled-600M-ct2-int8");
+    expect(entry.files).toContain("model.bin");
+    expect(entry.expectedBytes).toBe(622595991);
+    expect(entry.sha256).toHaveLength(64);
+    expect(entry.filename.endsWith(".gguf")).toBe(false);
   });
 
   it("returns undefined for unknown ids", () => {

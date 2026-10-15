@@ -7,6 +7,7 @@ import type { ServerConfig } from "../config.js";
 import { LlmSidecar, LlmSidecarError } from "../llm-process.js";
 import { GGUF_MAGIC, removeInactiveGgufs } from "../model-downloader.js";
 import type { FetchLike } from "../types.js";
+import { testServerConfig } from "./helpers/server-config.js";
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "tsub-llm-"));
@@ -46,30 +47,12 @@ function fakeOwnedChild(): ChildProcess {
 }
 
 function baseConfig(modelsDir: string): ServerConfig {
-  return {
-    port: 8080,
-    nodeEnv: "test",
-    addonPassword: "secret",
-    authEnabled: true,
-    enableManagementApi: false,
-    targetLang: "heb",
-    llmModelId: "qwen3-1.7b-q4_k_m",
-    llmModelUrl: "https://example.test/old.gguf",
-    llmModelFilename: "Qwen_Qwen3-1.7B-Q4_K_M.gguf",
-    llmModelSha256: "",
-    llmModelBytes: 0,
+  return testServerConfig({
     llmModelsDir: modelsDir,
-    llmModelPath: "",
-    llmServerUrl: "http://127.0.0.1:18081",
-    llmLlamaBin: "",
-    openSubtitlesBaseUrl: "https://opensubtitles-v3.strem.io",
     subtitleCacheDir: modelsDir,
-    subtitleCacheTtlSec: 60,
-    translationGlossary: [],
-    translateBatchSize: 8,
     requestLogPath: path.join(modelsDir, "req.jsonl"),
     serverLogPath: path.join(modelsDir, "server.log"),
-  };
+  });
 }
 
 const dirs: string[] = [];

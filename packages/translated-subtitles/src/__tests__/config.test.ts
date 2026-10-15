@@ -78,7 +78,18 @@ describe("loadConfig", () => {
     const entry = applyCatalogModel(config, "qwen3-0.6b-q4_k_m");
     expect(entry.id).toBe("qwen3-0.6b-q4_k_m");
     expect(config.llmModelId).toBe("qwen3-0.6b-q4_k_m");
+    expect(config.engine).toBe("llm");
     expect(config.llmModelFilename).toBe("Qwen_Qwen3-0.6B-Q4_K_M.gguf");
     expect(config.llmModelPath).toBe("");
+  });
+
+  it("loads NLLB as engine=mt and does not fill GGUF fields", async () => {
+    vi.stubEnv("LLM_MODEL_ID", "nllb-200-distilled-600m-int8");
+    const config = await freshLoadConfig();
+    expect(config.engine).toBe("mt");
+    expect(config.llmModelUrl).toBe("");
+    expect(config.llmModelFilename).toBe("");
+    expect(config.mtModelDirName).toBe("nllb-200-distilled-600M-ct2-int8");
+    expect(config.mtModelUrl).toContain("model.bin");
   });
 });

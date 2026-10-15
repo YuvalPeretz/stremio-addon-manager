@@ -54,6 +54,7 @@ export type {
   CreateAddonOptions,
   AddonProduct,
   LlmModelCatalogEntry,
+  CatalogEngine,
 } from "./config/index.js";
 export {
   AccessMethod,
@@ -71,6 +72,8 @@ export {
   DEFAULT_LLM_MODEL_ID,
   getLlmModelCatalogEntry,
   resolveLlmModelCatalogEntry,
+  catalogEngine,
+  engineSwitchConfirmCopy,
   llmModelWizardCopy,
   TRANSLATED_SUBTITLES_ENV_METADATA,
   STREAMING_ONLY_ENV_KEYS,
@@ -80,6 +83,8 @@ export {
   DEFAULT_OPENSUBTITLES_BASE_URL,
   DEFAULT_LLM_MODELS_DIR,
   DEFAULT_LLM_SERVER_URL,
+  DEFAULT_MT_MODELS_DIR,
+  DEFAULT_MT_SERVER_URL,
 } from "./config/index.js";
 
 // Export Utils module

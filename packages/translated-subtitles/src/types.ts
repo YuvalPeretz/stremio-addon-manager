@@ -4,7 +4,8 @@
 
 export type ContentType = "movie" | "series";
 export type SubtitleFormat = "srt" | "vtt";
-export type ModelTier = "ultra-light" | "light" | "light-alt" | "balanced";
+export type CatalogEngine = "llm" | "mt";
+export type ModelTier = "ultra-light" | "light" | "light-alt" | "balanced" | "fast-literal";
 
 export interface StremioSubtitle {
   id: string;
@@ -53,11 +54,14 @@ export interface CacheMeta {
   modelId: string;
   format: SubtitleFormat;
   createdAt: number;
+  /** OpenSubtitles ISO code; required for NLLB (FLORES source language). */
+  sourceLang?: string;
 }
 
 export interface ModelCatalogEntry {
   id: string;
   displayName: string;
+  engine?: CatalogEngine;
   tier: ModelTier;
   recommended: boolean;
   experimental: boolean;
@@ -68,6 +72,8 @@ export interface ModelCatalogEntry {
   ramBlurb: string;
   hwBlurb: string;
   qualityBlurb: string;
+  /** Extra snapshot files for MT (CTranslate2 directory). */
+  files?: string[];
 }
 
 export interface ModelCatalogFile {

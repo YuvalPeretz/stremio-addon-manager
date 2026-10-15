@@ -4,12 +4,13 @@
 
 import type { ServerConfig } from "./config.js";
 import { buildCacheKey, SubtitleCache } from "./cache.js";
-import { formatFromUrl, OpenSubtitlesClient } from "./opensubtitles-client.js";
+import { formatFromUrl, OpenSubtitlesClient, describeSourceLang } from "./opensubtitles-client.js";
 import { cueTexts, parseSubtitle, rebundleSubtitle } from "./subtitle-parse.js";
-import type { LlmTranslator } from "./translator.js";
+import type { CueTranslator } from "./translator.js";
 import type { CacheMeta, ContentType, StremioSubtitle, SubtitleFormat } from "./types.js";
 
-export type EnsureLlmReady = () => Promise<void>;
+export type EnsureEngineReady = () => Promise<void>;
+export type TranslatorProvider = () => CueTranslator;
 
 export class TranslatePipeline {
   private readonly inflight = new Map<string, Promise<string>>();
@@ -18,11 +19,15 @@ export class TranslatePipeline {
     private readonly config: ServerConfig,
     private readonly osClient: OpenSubtitlesClient,
     private readonly cache: SubtitleCache,
-    private readonly translator: LlmTranslator,
-    private readonly ensureLlmReady?: EnsureLlmReady
+    private readonly getTranslator: TranslatorProvider,
+    private readonly ensureEngineReady?: EnsureEngineReady
   ) {}
 
-  prepareTrack(sourceUrl: string, formatHint?: SubtitleFormat): { cacheKey: string; format: SubtitleFormat } {
+  prepareTrack(
+    sourceUrl: string,
+    formatHint?: SubtitleFormat,
+    sourceLang?: string
+  ): { cacheKey: string; format: SubtitleFormat } {
     const format = formatHint ?? formatFromUrl(sourceUrl);
     const cacheKey = buildCacheKey(sourceUrl, this.config.targetLang, this.config.llmModelId);
     const existing = this.cache.readMeta(cacheKey);
@@ -33,6 +38,7 @@ export class TranslatePipeline {
         modelId: this.config.llmModelId,
         format,
         createdAt: Date.now(),
+        sourceLang,
       });
     }
     return { cacheKey, format: existing?.format ?? format };
@@ -47,7 +53,7 @@ export class TranslatePipeline {
     if (!source) {
       return [];
     }
-    const { cacheKey, format } = this.prepareTrack(source.url);
+    const { cacheKey, format } = this.prepareTrack(source.url, undefined, describeSourceLang(source));
     return [
       {
         id: `translated-${this.config.targetLang}`,
@@ -80,13 +86,13 @@ export class TranslatePipeline {
     if (!meta) {
       throw new PipelineError("Unknown cache key", 404);
     }
-    if (this.ensureLlmReady) {
-      await this.ensureLlmReady();
+    if (this.ensureEngineReady) {
+      await this.ensureEngineReady();
     }
     const sourceBody = await this.osClient.downloadSubtitle(meta.sourceUrl);
     const parsed = parseSubtitle(sourceBody, meta.format);
     const texts = cueTexts(parsed);
-    const translated = await this.translator.translateTexts(texts);
+    const translated = await this.getTranslator().translateTexts(texts, meta.sourceLang);
     const body = rebundleSubtitle(parsed, translated);
     const nextMeta: CacheMeta = {
       ...meta,

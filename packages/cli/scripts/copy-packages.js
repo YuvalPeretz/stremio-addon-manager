@@ -33,7 +33,7 @@ const packages = [
   {
     // Built by the translated-subtitles package agent; skip if not present yet.
     name: 'translated-subtitles',
-    files: ['dist', 'package.json', 'README.md', 'bin', 'models'],
+    files: ['dist', 'package.json', 'README.md', 'bin', 'models', 'mt-sidecar'],
     optional: true,
   },
 ];

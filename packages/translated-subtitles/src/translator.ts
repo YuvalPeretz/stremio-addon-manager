@@ -166,7 +166,11 @@ export function parseNumberedTranslations(raw: string, expected: number): string
   return out;
 }
 
-export class LlmTranslator {
+export interface CueTranslator {
+  translateTexts(texts: string[], sourceLang?: string): Promise<string[]>;
+}
+
+export class LlmTranslator implements CueTranslator {
   private readonly batchSize: number;
 
   constructor(
@@ -179,7 +183,7 @@ export class LlmTranslator {
     this.batchSize = clampBatchSize(batchSize);
   }
 
-  async translateTexts(texts: string[]): Promise<string[]> {
+  async translateTexts(texts: string[], _sourceLang?: string): Promise<string[]> {
     if (texts.length === 0) {
       return [];
     }

@@ -54,6 +54,10 @@ export function getModelById(id: string): ModelCatalogEntry | undefined {
   return readCatalogFile().models.find((m) => m.id === needle);
 }
 
+export function catalogEngine(entry: ModelCatalogEntry): "llm" | "mt" {
+  return entry.engine === "mt" ? "mt" : "llm";
+}
+
 export function requireModelById(id: string): ModelCatalogEntry {
   const found = getModelById(id);
   if (!found) {

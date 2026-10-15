@@ -9,6 +9,7 @@ export {
   DEFAULT_TARGET_LANG,
   DEFAULT_PORT,
   DEFAULT_LLM_SERVER_URL,
+  DEFAULT_MT_SERVER_URL,
   DEFAULT_OPENSUBTITLES_BASE_URL,
   TRANSLATED_SUBTITLES_ENV_KEYS,
   TRANSLATED_SUBTITLES_ENV_DEFINITIONS,
@@ -22,6 +23,7 @@ export {
   getModelById,
   requireModelById,
   getCatalogJsonPath,
+  catalogEngine,
 } from "./model-catalog.js";
 export { manifest, MANIFEST_ID, type AddonManifest } from "./manifest.js";
 export { createServer, type ServerDeps } from "./server.js";

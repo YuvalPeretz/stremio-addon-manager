@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ServerConfig } from "./config.js";
 import { applyCatalogModel } from "./config.js";
+import { catalogEngine, getModelById } from "./model-catalog.js";
 import type { FetchLike, LlmHealth } from "./types.js";
 import { ensureModelFile, removeInactiveGgufs } from "./model-downloader.js";
 
@@ -122,11 +123,11 @@ export class LlmSidecar {
     return this.lastHealth;
   }
 
-  async ensureReady(): Promise<void> {
-    if (this.readyPromise) {
+  async ensureReady(options?: { skipAttach?: boolean; extraKeep?: string[] }): Promise<void> {
+    if (this.readyPromise && !options?.skipAttach) {
       return this.readyPromise;
     }
-    this.readyPromise = this.startOrAttach();
+    this.readyPromise = this.startOrAttach(options);
     try {
       await this.readyPromise;
     } catch (err) {
@@ -144,6 +145,10 @@ export class LlmSidecar {
     if (!nextId) {
       throw new LlmSidecarError("modelId is required");
     }
+    const preview = getModelById(nextId);
+    if (preview && catalogEngine(preview) === "mt") {
+      throw new LlmSidecarError(`Model ${nextId} is an MT engine, not a GGUF`);
+    }
 
     await this.stop();
 
@@ -151,15 +156,9 @@ export class LlmSidecar {
     const extraKeep = dropIn ? [dropIn] : [];
 
     const entry = applyCatalogModel(this.config, nextId);
-    this.readyPromise = this.startOrAttach({ skipAttach: true, extraKeep });
-    let pruned: string[] = [];
-    try {
-      await this.readyPromise;
-      pruned = this.lastPruned;
-    } catch (err) {
-      this.readyPromise = undefined;
-      throw err;
-    }
+    this.readyPromise = undefined;
+    await this.ensureReady({ skipAttach: true, extraKeep });
+    const pruned = this.lastPruned;
 
     return {
       modelId: this.config.llmModelId,

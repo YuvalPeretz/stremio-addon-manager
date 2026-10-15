@@ -33,6 +33,7 @@ import {
   DEFAULT_LLM_MODEL_ID,
   DEFAULT_TARGET_LANG,
   LLM_MODEL_CATALOG,
+  engineSwitchConfirmCopy,
   isTranslatedSubtitlesProduct,
   normalizeAddonProduct,
 } from "@stremio-addon-manager/core/browser";
@@ -231,7 +232,7 @@ function Configuration() {
   async function switchLlmAfterSave(modelId: string): Promise<void> {
     if (!selectedAddonId || !window.electron.translatedSubtitles?.switchModel) {
       message.warning(
-        "Model settings saved. Could not contact the addon to reload llama — it will pick up the new GGUF on next start."
+        "Model settings saved. Could not contact the addon to reload the translation engine — it will pick up the active engine on next start."
       );
       return;
     }
@@ -240,13 +241,13 @@ function Configuration() {
       if (result.warning) {
         message.warning(result.warning, 12);
       } else {
-        message.success("Translation model switched. Llama reloaded with the new GGUF.");
+        message.success("Translation engine switched.");
       }
       return;
     }
     if (result.unreachable) {
       message.warning(
-        "Model settings saved. The addon was unreachable. It will prune the old GGUF and download the new file on next start.",
+        "Model settings saved. The addon was unreachable. Next start prunes the inactive engine and downloads the active one only.",
         14
       );
       return;
@@ -340,8 +341,7 @@ function Configuration() {
       if (modelChanged) {
         Modal.confirm({
           title: "Switch translation model?",
-          content:
-            "This deletes the previous GGUF in the models directory, then downloads the new file. Llama will reload.",
+          content: engineSwitchConfirmCopy(previousModelId, nextModelId),
           okText: "Switch model",
           onOk: persist,
         });
@@ -492,7 +492,7 @@ function Configuration() {
                 label="Translation model"
                 name={["addon", "llmModelId"]}
                 rules={[{ required: true, message: "Select a model" }]}
-                extra="Changing this deletes the previous GGUF in the models directory, then downloads and loads the new file. No manual sidecar restart is needed when the switch succeeds."
+                extra="Switching engines stops the other sidecar we own and deletes its catalog files. LLM↔LLM only replaces GGUFs. No manual sidecar restart is needed when the switch succeeds (spawn-in-app). Sibling compose services still need a restart so mmap releases old files."
               >
                 <Radio.Group style={{ width: "100%" }}>
                   <Flex vertical gap={8}>
@@ -504,6 +504,7 @@ function Configuration() {
                             <Tag>{entry.tier}</Tag>
                             {entry.recommended && <Tag color="blue">Recommended</Tag>}
                             {entry.experimental && <Tag color="orange">Experimental</Tag>}
+                            {entry.engine === "mt" && <Tag color="purple">Not an LLM</Tag>}
                           </Text>
                           <Text type="secondary" style={{ fontSize: 12 }}>
                             {entry.ramBlurb} · {entry.qualityBlurb}

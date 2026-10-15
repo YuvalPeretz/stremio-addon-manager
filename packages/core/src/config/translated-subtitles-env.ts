@@ -12,6 +12,8 @@ export const DEFAULT_TARGET_LANG = "eng";
 export const DEFAULT_OPENSUBTITLES_BASE_URL = "https://opensubtitles-v3.strem.io";
 export const DEFAULT_LLM_MODELS_DIR = "/data/models";
 export const DEFAULT_LLM_SERVER_URL = "http://127.0.0.1:8081";
+export const DEFAULT_MT_MODELS_DIR = "/data/models/nllb";
+export const DEFAULT_MT_SERVER_URL = "http://127.0.0.1:8082";
 export const DEFAULT_SUBTITLE_CACHE_DIR = "/data/subtitle-cache";
 export const DEFAULT_SUBTITLE_CACHE_TTL_SEC = 2592000;
 export const DEFAULT_ADDON_REQUEST_LOG = "/data/logs/request-log.jsonl";
@@ -211,6 +213,80 @@ export const TRANSLATED_SUBTITLES_ENV_METADATA: Record<string, EnvVarMetadata> =
     generateable: false,
     source: "manual",
   },
+  MT_SERVER_URL: {
+    description: "CTranslate2 NLLB sidecar URL",
+    default: DEFAULT_MT_SERVER_URL,
+    type: "string",
+    required: false,
+    sensitive: false,
+    generateable: false,
+    source: "manual",
+  },
+  MT_MODELS_DIR: {
+    description: "Durable directory for NLLB CTranslate2 snapshots",
+    default: DEFAULT_MT_MODELS_DIR,
+    type: "string",
+    required: false,
+    sensitive: false,
+    generateable: false,
+    source: "manual",
+  },
+  MT_MODEL_URL: {
+    description: "Pinned Hugging Face URL for the NLLB model.bin (directory snapshot)",
+    type: "string",
+    required: false,
+    sensitive: false,
+    generateable: false,
+    source: "catalog",
+  },
+  MT_MODEL_DIR: {
+    description: "Extract directory name under MT_MODELS_DIR",
+    type: "string",
+    required: false,
+    sensitive: false,
+    generateable: false,
+    source: "catalog",
+  },
+  MT_MODEL_SHA256: {
+    description: "Expected SHA-256 of NLLB model.bin",
+    type: "string",
+    required: false,
+    sensitive: false,
+    generateable: false,
+    source: "catalog",
+  },
+  MT_MODEL_BYTES: {
+    description: "Expected NLLB model.bin size in bytes",
+    type: "number",
+    required: false,
+    sensitive: false,
+    generateable: false,
+    source: "catalog",
+  },
+  MT_MODEL_FILES: {
+    description: "Comma-separated snapshot filenames for the NLLB directory",
+    type: "string",
+    required: false,
+    sensitive: false,
+    generateable: false,
+    source: "catalog",
+  },
+  MT_PYTHON: {
+    description: "Python interpreter for the in-repo CTranslate2 sidecar (default python3)",
+    type: "string",
+    required: false,
+    sensitive: false,
+    generateable: false,
+    source: "manual",
+  },
+  MT_CT2_BIN: {
+    description: "Optional CTranslate2 HTTP binary instead of python mt-sidecar/server.py",
+    type: "string",
+    required: false,
+    sensitive: false,
+    generateable: false,
+    source: "manual",
+  },
   OPENSUBTITLES_BASE_URL: {
     description: "Upstream OpenSubtitles v3 Stremio addon base",
     default: DEFAULT_OPENSUBTITLES_BASE_URL,
@@ -279,10 +355,10 @@ export function getTranslatedSubtitlesEnvVarsFromConfig(config: AddonManagerConf
     PORT: String(config.addon.port || TRANSLATED_SUBTITLES_DEFAULT_PORT),
     TARGET_LANG: targetLang,
     LLM_MODEL_ID: model.id,
-    LLM_MODEL_URL: model.url,
-    LLM_MODEL_FILENAME: model.filename,
     LLM_MODELS_DIR: DEFAULT_LLM_MODELS_DIR,
     LLM_SERVER_URL: DEFAULT_LLM_SERVER_URL,
+    MT_SERVER_URL: DEFAULT_MT_SERVER_URL,
+    MT_MODELS_DIR: DEFAULT_MT_MODELS_DIR,
     OPENSUBTITLES_BASE_URL: DEFAULT_OPENSUBTITLES_BASE_URL,
     SUBTITLE_CACHE_DIR: DEFAULT_SUBTITLE_CACHE_DIR,
     SUBTITLE_CACHE_TTL_SEC: String(DEFAULT_SUBTITLE_CACHE_TTL_SEC),
@@ -291,11 +367,27 @@ export function getTranslatedSubtitlesEnvVarsFromConfig(config: AddonManagerConf
     ENABLE_MANAGEMENT_API: "true",
   };
 
-  if (model.sha256) {
-    envVars.LLM_MODEL_SHA256 = model.sha256;
-  }
-  if (typeof model.expectedBytes === "number" && model.expectedBytes > 0) {
-    envVars.LLM_MODEL_BYTES = String(model.expectedBytes);
+  if (model.engine === "mt") {
+    envVars.MT_MODEL_URL = model.url;
+    envVars.MT_MODEL_DIR = model.filename;
+    if (model.sha256) {
+      envVars.MT_MODEL_SHA256 = model.sha256;
+    }
+    if (typeof model.expectedBytes === "number" && model.expectedBytes > 0) {
+      envVars.MT_MODEL_BYTES = String(model.expectedBytes);
+    }
+    if (model.files && model.files.length > 0) {
+      envVars.MT_MODEL_FILES = model.files.join(",");
+    }
+  } else {
+    envVars.LLM_MODEL_URL = model.url;
+    envVars.LLM_MODEL_FILENAME = model.filename;
+    if (model.sha256) {
+      envVars.LLM_MODEL_SHA256 = model.sha256;
+    }
+    if (typeof model.expectedBytes === "number" && model.expectedBytes > 0) {
+      envVars.LLM_MODEL_BYTES = String(model.expectedBytes);
+    }
   }
 
   if (config.addon.password) {

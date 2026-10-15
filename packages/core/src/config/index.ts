@@ -43,9 +43,11 @@ export {
   DEFAULT_LLM_MODEL_ID,
   getLlmModelCatalogEntry,
   resolveLlmModelCatalogEntry,
+  catalogEngine,
+  engineSwitchConfirmCopy,
   llmModelWizardCopy,
 } from "./llm-model-catalog.js";
-export type { LlmModelCatalogEntry } from "./llm-model-catalog.js";
+export type { LlmModelCatalogEntry, CatalogEngine } from "./llm-model-catalog.js";
 export {
   TRANSLATED_SUBTITLES_ENV_METADATA,
   STREAMING_ONLY_ENV_KEYS,
@@ -55,6 +57,8 @@ export {
   DEFAULT_OPENSUBTITLES_BASE_URL,
   DEFAULT_LLM_MODELS_DIR,
   DEFAULT_LLM_SERVER_URL,
+  DEFAULT_MT_MODELS_DIR,
+  DEFAULT_MT_SERVER_URL,
 } from "./translated-subtitles-env.js";
 export {
   AccessMethod,

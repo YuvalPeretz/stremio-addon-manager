@@ -18,7 +18,7 @@ function starterInstallScript(product: AddonProduct): string {
     product === "translated_subtitles"
       ? [
           "# PRODUCT=translated_subtitles is injected by Electron so a shared script can branch.",
-          "# Mount LLM_MODELS_DIR (e.g. /data/models) on the public container; read model URL from ADDON_ENV.",
+          "# Mount LLM_MODELS_DIR and MT_MODELS_DIR on the public container; Python+ct2 or sibling nllb.",
         ]
       : [];
   return [
@@ -268,10 +268,11 @@ export interface DeployScriptStepValue {
 const TRANSLATED_SUBTITLES_EXAMPLE_NOTES = [
   "# --- TranslatedSubtitles product notes ---",
   "# Electron injects PRODUCT=translated_subtitles so a shared Gateway script can branch.",
-  "# Mount LLM_MODELS_DIR (e.g. /data/models) and subtitle cache on the PUBLIC container only.",
-  "# Admin does not need a second LLM sidecar; translation runs on the public app.",
-  "# On install/update: if LLM_MODEL_PATH is unset, download LLM_MODEL_URL from $ADDON_ENV into",
-  "#   LLM_MODELS_DIR / LLM_MODEL_FILENAME and verify size/hash (preferred before health checks).",
+  "# Mount LLM_MODELS_DIR, MT_MODELS_DIR, and subtitle cache on the PUBLIC container only.",
+  "# Public image: Python 3 + ctranslate2 + sentencepiece, or sibling MT_SERVER_URL / LLM_SERVER_URL.",
+  "# Admin does not need a second LLM or NLLB sidecar; translation runs on the public app.",
+  "# On install/update: download the active engine only (GGUF or NLLB CT2 dir) from $ADDON_ENV.",
+  "# On config: if llama/nllb are sibling containers, restart them so mmap releases old files.",
   "# Do not put HF URLs or tokens in this script body; read them from $ADDON_ENV.",
   "#",
 ].join("\n");

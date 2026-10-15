@@ -31,7 +31,8 @@
   "files": [
     "dist",
     "bin",
-    "models"
+    "models",
+    "mt-sidecar"
   ],
   "bin": {
     "stremio-translated-subtitles": "./bin/server.js"

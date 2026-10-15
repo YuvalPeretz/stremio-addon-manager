@@ -4,10 +4,11 @@
 
 import os from "node:os";
 import path from "node:path";
-import type { GlossaryEntry } from "./types.js";
+import type { CatalogEngine, GlossaryEntry, ModelCatalogEntry } from "./types.js";
 import {
   DEFAULT_CACHE_TTL_SEC,
   DEFAULT_LLM_SERVER_URL,
+  DEFAULT_MT_SERVER_URL,
   DEFAULT_OPENSUBTITLES_BASE_URL,
   DEFAULT_PORT,
   DEFAULT_TARGET_LANG,
@@ -15,8 +16,14 @@ import {
   MAX_TRANSLATE_BATCH_SIZE,
   MIN_TRANSLATE_BATCH_SIZE,
 } from "./env-keys.js";
-import { DEFAULT_MODEL_ID, getModelById, requireModelById } from "./model-catalog.js";
-import type { ModelCatalogEntry } from "./types.js";
+import { DEFAULT_MODEL_ID, catalogEngine, getModelById, requireModelById } from "./model-catalog.js";
+
+export const DEFAULT_MT_MODEL_FILES: readonly string[] = [
+  "model.bin",
+  "sentencepiece.bpe.model",
+  "config.json",
+  "shared_vocabulary.txt",
+];
 
 export interface ServerConfig {
   port: number;
@@ -26,6 +33,7 @@ export interface ServerConfig {
   domain?: string;
   enableManagementApi: boolean;
   targetLang: string;
+  engine: CatalogEngine;
   llmModelId: string;
   llmModelUrl: string;
   llmModelFilename: string;
@@ -36,6 +44,15 @@ export interface ServerConfig {
   llmServerUrl: string;
   llmThreads?: number;
   llmLlamaBin: string;
+  mtServerUrl: string;
+  mtModelsDir: string;
+  mtModelUrl: string;
+  mtModelDirName: string;
+  mtModelSha256: string;
+  mtModelBytes: number;
+  mtModelFiles: string[];
+  mtPython: string;
+  mtCt2Bin: string;
   openSubtitlesBaseUrl: string;
   subtitleCacheDir: string;
   subtitleCacheTtlSec: number;
@@ -112,23 +129,62 @@ export function parseGlossary(raw: string | undefined): GlossaryEntry[] {
   return entries;
 }
 
+export function parseMtModelFiles(raw: string | undefined, fallback: readonly string[]): string[] {
+  if (!raw || raw.trim() === "") {
+    return [...fallback];
+  }
+  const files = raw
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  return files.length > 0 ? files : [...fallback];
+}
+
 export function loadConfig(): ServerConfig {
   const addonPassword = process.env.ADDON_PASSWORD || "YOUR_ADDON_PASSWORD_HERE";
   const authEnabled = Boolean(addonPassword && addonPassword !== "YOUR_ADDON_PASSWORD_HERE");
 
   const modelId = (process.env.LLM_MODEL_ID ?? "").trim() || DEFAULT_MODEL_ID;
   const catalog = getModelById(modelId);
+  const engine: CatalogEngine = catalog ? catalogEngine(catalog) : "llm";
 
-  const llmModelUrl = (process.env.LLM_MODEL_URL ?? "").trim() || catalog?.url || "";
+  const llmModelUrl =
+    engine === "llm"
+      ? (process.env.LLM_MODEL_URL ?? "").trim() || catalog?.url || ""
+      : "";
   const llmModelFilename =
-    (process.env.LLM_MODEL_FILENAME ?? "").trim() || catalog?.filename || "";
-  const llmModelSha256 = (process.env.LLM_MODEL_SHA256 ?? "").trim() || catalog?.sha256 || "";
+    engine === "llm"
+      ? (process.env.LLM_MODEL_FILENAME ?? "").trim() || catalog?.filename || ""
+      : "";
+  const llmModelSha256 =
+    engine === "llm"
+      ? (process.env.LLM_MODEL_SHA256 ?? "").trim() || catalog?.sha256 || ""
+      : "";
   const bytesRaw = (process.env.LLM_MODEL_BYTES ?? "").trim();
-  const llmModelBytes = bytesRaw
-    ? parseEnvInt(bytesRaw, catalog?.expectedBytes ?? 0, 0, Number.MAX_SAFE_INTEGER, "LLM_MODEL_BYTES")
-    : catalog?.expectedBytes ?? 0;
+  const llmModelBytes =
+    engine === "llm"
+      ? bytesRaw
+        ? parseEnvInt(bytesRaw, catalog?.expectedBytes ?? 0, 0, Number.MAX_SAFE_INTEGER, "LLM_MODEL_BYTES")
+        : catalog?.expectedBytes ?? 0
+      : 0;
+
+  const mtFallbackFiles = catalog?.files ?? DEFAULT_MT_MODEL_FILES;
+  const mtModelUrl =
+    engine === "mt" ? (process.env.MT_MODEL_URL ?? "").trim() || catalog?.url || "" : "";
+  const mtModelDirName =
+    engine === "mt" ? (process.env.MT_MODEL_DIR ?? "").trim() || catalog?.filename || "" : "";
+  const mtModelSha256 =
+    engine === "mt" ? (process.env.MT_MODEL_SHA256 ?? "").trim() || catalog?.sha256 || "" : "";
+  const mtBytesRaw = (process.env.MT_MODEL_BYTES ?? "").trim();
+  const mtModelBytes =
+    engine === "mt"
+      ? mtBytesRaw
+        ? parseEnvInt(mtBytesRaw, catalog?.expectedBytes ?? 0, 0, Number.MAX_SAFE_INTEGER, "MT_MODEL_BYTES")
+        : catalog?.expectedBytes ?? 0
+      : 0;
 
   const defaultModelsDir = path.join(os.homedir(), ".stremio-addon-manager", "models");
+  const defaultMtModelsDir = path.join(os.homedir(), ".stremio-addon-manager", "models", "nllb");
   const defaultCacheDir = path.join(os.homedir(), ".stremio-addon-manager", "subtitle-cache");
 
   const threadsRaw = process.env.LLM_THREADS?.trim();
@@ -165,16 +221,26 @@ export function loadConfig(): ServerConfig {
     domain: process.env.ADDON_DOMAIN?.trim() || undefined,
     enableManagementApi: parseEnvBool(process.env.ENABLE_MANAGEMENT_API, false, "ENABLE_MANAGEMENT_API"),
     targetLang,
+    engine,
     llmModelId: modelId,
     llmModelUrl,
     llmModelFilename,
     llmModelSha256,
     llmModelBytes,
     llmModelsDir: resolvePathEnv(process.env.LLM_MODELS_DIR, defaultModelsDir),
-    llmModelPath: (process.env.LLM_MODEL_PATH ?? "").trim(),
+    llmModelPath: engine === "llm" ? (process.env.LLM_MODEL_PATH ?? "").trim() : "",
     llmServerUrl: (process.env.LLM_SERVER_URL ?? "").trim() || DEFAULT_LLM_SERVER_URL,
     llmThreads: llmThreads === 0 ? undefined : llmThreads,
     llmLlamaBin: (process.env.LLM_LLAMA_BIN ?? "").trim(),
+    mtServerUrl: (process.env.MT_SERVER_URL ?? "").trim() || DEFAULT_MT_SERVER_URL,
+    mtModelsDir: resolvePathEnv(process.env.MT_MODELS_DIR, defaultMtModelsDir),
+    mtModelUrl,
+    mtModelDirName,
+    mtModelSha256,
+    mtModelBytes,
+    mtModelFiles: engine === "mt" ? parseMtModelFiles(process.env.MT_MODEL_FILES, mtFallbackFiles) : [],
+    mtPython: (process.env.MT_PYTHON ?? "").trim(),
+    mtCt2Bin: (process.env.MT_CT2_BIN ?? "").trim(),
     openSubtitlesBaseUrl:
       (process.env.OPENSUBTITLES_BASE_URL ?? "").trim().replace(/\/+$/, "") ||
       DEFAULT_OPENSUBTITLES_BASE_URL,
@@ -196,9 +262,12 @@ export function loadConfig(): ServerConfig {
   console.log(`  - Port: ${config.port}`);
   console.log(`  - Environment: ${config.nodeEnv}`);
   console.log(`  - Target language: ${config.targetLang}`);
+  console.log(`  - Engine: ${config.engine}`);
   console.log(`  - Model: ${config.llmModelId}`);
   console.log(`  - LLM server: ${config.llmServerUrl}`);
+  console.log(`  - MT server: ${config.mtServerUrl}`);
   console.log(`  - Models dir: ${config.llmModelsDir}`);
+  console.log(`  - MT models dir: ${config.mtModelsDir}`);
   console.log(`  - Cache dir: ${config.subtitleCacheDir}`);
   console.log(`  - OpenSubtitles: ${config.openSubtitlesBaseUrl}`);
   console.log(`  - Authentication: ${config.authEnabled ? "Enabled 🔒" : "Disabled ⚠️"}`);
@@ -211,11 +280,30 @@ export function loadConfig(): ServerConfig {
 /** Mutate in-memory config to a catalog model (clears LLM_MODEL_PATH drop-in). */
 export function applyCatalogModel(config: ServerConfig, modelId: string): ModelCatalogEntry {
   const entry = requireModelById(modelId);
+  const engine = catalogEngine(entry);
   config.llmModelId = entry.id;
-  config.llmModelUrl = entry.url;
-  config.llmModelFilename = entry.filename;
-  config.llmModelSha256 = entry.sha256;
-  config.llmModelBytes = entry.expectedBytes;
+  config.engine = engine;
   config.llmModelPath = "";
+  if (engine === "mt") {
+    config.llmModelUrl = "";
+    config.llmModelFilename = "";
+    config.llmModelSha256 = "";
+    config.llmModelBytes = 0;
+    config.mtModelUrl = entry.url;
+    config.mtModelDirName = entry.filename;
+    config.mtModelSha256 = entry.sha256;
+    config.mtModelBytes = entry.expectedBytes;
+    config.mtModelFiles = entry.files && entry.files.length > 0 ? [...entry.files] : [...DEFAULT_MT_MODEL_FILES];
+  } else {
+    config.llmModelUrl = entry.url;
+    config.llmModelFilename = entry.filename;
+    config.llmModelSha256 = entry.sha256;
+    config.llmModelBytes = entry.expectedBytes;
+    config.mtModelUrl = "";
+    config.mtModelDirName = "";
+    config.mtModelSha256 = "";
+    config.mtModelBytes = 0;
+    config.mtModelFiles = [];
+  }
   return entry;
 }

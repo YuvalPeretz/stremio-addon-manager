@@ -1101,7 +1101,7 @@ export async function switchTranslatedSubtitlesModel(
     };
   }
 
-  const url = joinBaseUrl(base, password, "llm/switch");
+  const url = joinBaseUrl(base, password, "engine/switch");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), LLM_SWITCH_TIMEOUT_MS);
   try {
@@ -1119,6 +1119,7 @@ export async function switchTranslatedSubtitlesModel(
       ok?: boolean;
       error?: string;
       attachedSibling?: boolean;
+      engine?: string;
       modelId?: string;
       filename?: string;
       pruned?: string[];
@@ -1132,7 +1133,9 @@ export async function switchTranslatedSubtitlesModel(
       };
     }
     const warning = raw.attachedSibling
-      ? "New GGUF is on disk. If llama runs as a sibling container, restart that service so it loads the new file."
+      ? raw.engine === "mt"
+        ? "NLLB files are on disk. If llama still runs as a sibling container, restart that service so mmap releases the old GGUF."
+        : "New model files are on disk. If llama or NLLB run as sibling containers, restart those services so mmap releases the old files."
       : undefined;
     return {
       success: true,

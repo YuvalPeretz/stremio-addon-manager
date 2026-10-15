@@ -142,6 +142,148 @@ export function removeInactiveGgufs(
   return { deleted, kept };
 }
 
+export interface EnsureMtModelOptions {
+  destDir: string;
+  dirName: string;
+  url: string;
+  expectedBytes: number;
+  sha256: string;
+  files: readonly string[];
+}
+
+export function snapshotBaseUrl(fileUrl: string): string {
+  const trimmed = fileUrl.replace(/\/+$/, "");
+  const slash = trimmed.lastIndexOf("/");
+  return slash > 0 ? trimmed.slice(0, slash) : trimmed;
+}
+
+export function validateMtModelBin(
+  filePath: string,
+  expectedBytes: number,
+  sha256: string
+): { ok: true } | { ok: false; reason: string } {
+  if (!fs.existsSync(filePath)) {
+    return { ok: false, reason: `missing file: ${filePath}` };
+  }
+  const stat = fs.statSync(filePath);
+  if (expectedBytes > 0 && stat.size !== expectedBytes) {
+    return { ok: false, reason: `size ${stat.size} != expected ${expectedBytes}` };
+  }
+  if (sha256) {
+    const actual = sha256File(filePath);
+    if (actual.toLowerCase() !== sha256.toLowerCase()) {
+      return { ok: false, reason: `sha256 ${actual} != expected ${sha256}` };
+    }
+  }
+  return { ok: true };
+}
+
+export interface RemoveInactiveMtDirsResult {
+  deleted: string[];
+  kept: string[];
+}
+
+/**
+ * Remove other NLLB extract directories under `destDir`.
+ * Empty `keepDirName` deletes every subdirectory (used when switching to LLM).
+ */
+export function removeInactiveMtDirs(
+  destDir: string,
+  keepDirName: string
+): RemoveInactiveMtDirsResult {
+  const deleted: string[] = [];
+  const kept: string[] = [];
+  if (!destDir || !fs.existsSync(destDir)) {
+    return { deleted, kept };
+  }
+  const keep = keepDirName.trim();
+  const entries = fs.readdirSync(destDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const full = path.resolve(destDir, entry.name);
+    if (keep && entry.name === keep) {
+      kept.push(full);
+      continue;
+    }
+    try {
+      fs.rmSync(full, { recursive: true, force: true });
+      deleted.push(full);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`Could not delete inactive MT dir ${full}: ${message}`);
+    }
+  }
+  return { deleted, kept };
+}
+
+export async function ensureMtModelDir(
+  opts: EnsureMtModelOptions,
+  fetchFn: FetchLike = fetch
+): Promise<string> {
+  if (!opts.dirName) {
+    throw new ModelDownloadError("MT_MODEL_DIR is required when downloading NLLB");
+  }
+  if (!opts.url) {
+    throw new ModelDownloadError("MT_MODEL_URL is required when downloading NLLB");
+  }
+  const files = opts.files.length > 0 ? opts.files : ["model.bin"];
+  fs.mkdirSync(opts.destDir, { recursive: true });
+  const dest = path.join(opts.destDir, opts.dirName);
+  fs.mkdirSync(dest, { recursive: true });
+  const base = snapshotBaseUrl(opts.url);
+
+  for (const file of files) {
+    const fileDest = path.join(dest, file);
+    const fileUrl = `${base}/${file}`;
+    const isWeights = file === "model.bin";
+    if (fs.existsSync(fileDest)) {
+      if (isWeights) {
+        const check = validateMtModelBin(fileDest, opts.expectedBytes, opts.sha256);
+        if (check.ok) {
+          continue;
+        }
+        console.warn(`Existing NLLB model.bin failed validation (${check.reason}); re-downloading`);
+        fs.unlinkSync(fileDest);
+      } else {
+        continue;
+      }
+    }
+    const tmp = `${fileDest}.part`;
+    if (fs.existsSync(tmp)) {
+      fs.unlinkSync(tmp);
+    }
+    const response = await fetchFn(fileUrl, { redirect: "follow" });
+    if (!response.ok || !response.body) {
+      throw new ModelDownloadError(`NLLB download failed: HTTP ${response.status} for ${fileUrl}`);
+    }
+    try {
+      await writeResponseBody(response.body, tmp);
+    } catch (err) {
+      if (fs.existsSync(tmp)) {
+        fs.unlinkSync(tmp);
+      }
+      throw err;
+    }
+    if (isWeights) {
+      const check = validateMtModelBin(tmp, opts.expectedBytes, opts.sha256);
+      if (!check.ok) {
+        fs.unlinkSync(tmp);
+        throw new ModelDownloadError(`Downloaded NLLB model.bin failed validation: ${check.reason}`);
+      }
+    }
+    fs.renameSync(tmp, fileDest);
+  }
+
+  const weights = path.join(dest, "model.bin");
+  const check = validateMtModelBin(weights, opts.expectedBytes, opts.sha256);
+  if (!check.ok) {
+    throw new ModelDownloadError(`NLLB model.bin failed validation: ${check.reason}`);
+  }
+  return dest;
+}
+
 export async function ensureModelFile(
   opts: EnsureModelOptions,
   fetchFn: FetchLike = fetch

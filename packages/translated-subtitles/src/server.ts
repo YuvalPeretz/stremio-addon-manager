@@ -9,7 +9,9 @@ import rateLimit from "express-rate-limit";
 import type { ServerConfig } from "./config.js";
 import { resolveExternalBaseUrl } from "./external-base.js";
 import { manifest } from "./manifest.js";
-import { LlmSidecarError, type LlmSidecar } from "./llm-process.js";
+import { LlmSidecarError } from "./llm-process.js";
+import { MtSidecarError } from "./mt-process.js";
+import { EngineManagerError, type EngineManager, type EngineReplaceResult } from "./engine-manager.js";
 import { PipelineError, type TranslatePipeline } from "./pipeline.js";
 import { OpenSubtitlesError } from "./opensubtitles-client.js";
 import { TranslationError } from "./translator.js";
@@ -19,7 +21,7 @@ import type { ContentType, SubtitleFormat } from "./types.js";
 export interface ServerDeps {
   config: ServerConfig;
   pipeline: TranslatePipeline;
-  sidecar: LlmSidecar;
+  engines: Pick<EngineManager, "replace" | "probeActive">;
 }
 
 function asyncHandler(
@@ -43,7 +45,7 @@ function contentTypeFor(format: SubtitleFormat): string {
 }
 
 export function createServer(deps: ServerDeps): express.Express {
-  const { config, pipeline, sidecar } = deps;
+  const { config, pipeline, engines } = deps;
   const app = express();
 
   app.disable("x-powered-by");
@@ -87,14 +89,16 @@ export function createServer(deps: ServerDeps): express.Express {
   app.get(
     "/health",
     asyncHandler(async (_req: Request, res: Response) => {
-      const llm = await sidecar.probeHealth();
+      const health = await engines.probeActive();
       res.json({
         status: "ok",
         uptime: process.uptime(),
         timestamp: new Date().toISOString(),
         targetLang: config.targetLang,
         modelId: config.llmModelId,
-        llm,
+        engine: health.engine,
+        llm: health.llm,
+        mt: health.mt,
         memory: {
           heapUsed: `${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB`,
           heapTotal: `${(process.memoryUsage().heapTotal / 1024 / 1024).toFixed(2)} MB`,
@@ -114,44 +118,47 @@ export function createServer(deps: ServerDeps): express.Express {
     res.json(manifest);
   });
 
-  app.post(
-    "/:password/llm/switch",
-    authenticateToken,
-    asyncHandler(async (req: Request, res: Response) => {
-      const body = req.body as { modelId?: unknown };
-      const modelId = typeof body.modelId === "string" ? body.modelId.trim() : "";
-      if (!modelId) {
-        res.status(400).json({ ok: false, error: "modelId is required" });
+  async function handleEngineSwitch(req: Request, res: Response): Promise<void> {
+    const body = req.body as { modelId?: unknown };
+    const modelId = typeof body.modelId === "string" ? body.modelId.trim() : "";
+    if (!modelId) {
+      res.status(400).json({ ok: false, error: "modelId is required" });
+      return;
+    }
+    try {
+      const result: EngineReplaceResult = await engines.replace(modelId);
+      res.json({
+        ok: true,
+        modelId: result.modelId,
+        engine: result.engine,
+        filename: result.filename,
+        attachedSibling: result.attachedSibling,
+        pruned: result.pruned,
+        llm: result.llm,
+        mt: result.mt,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("Unknown LLM_MODEL_ID")) {
+        res.status(400).json({ ok: false, error: message });
         return;
       }
-      try {
-        const result = await sidecar.replaceModel(modelId);
-        res.json({
-          ok: true,
-          modelId: result.modelId,
-          filename: result.filename,
-          attachedSibling: result.attachedSibling,
-          pruned: result.pruned,
-          llm: result.llm,
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (message.includes("Unknown LLM_MODEL_ID")) {
-          res.status(400).json({ ok: false, error: message });
-          return;
-        }
-        if (
-          err instanceof LlmSidecarError ||
-          err instanceof ModelDownloadError
-        ) {
-          res.status(503).json({ ok: false, error: message });
-          return;
-        }
-        console.error("LLM switch failed:", err);
-        res.status(500).json({ ok: false, error: message });
+      if (
+        err instanceof LlmSidecarError ||
+        err instanceof MtSidecarError ||
+        err instanceof EngineManagerError ||
+        err instanceof ModelDownloadError
+      ) {
+        res.status(503).json({ ok: false, error: message });
+        return;
       }
-    })
-  );
+      console.error("Engine switch failed:", err);
+      res.status(500).json({ ok: false, error: message });
+    }
+  }
+
+  app.post("/:password/engine/switch", authenticateToken, asyncHandler(handleEngineSwitch));
+  app.post("/:password/llm/switch", authenticateToken, asyncHandler(handleEngineSwitch));
 
   app.options("/:password/subtitles/:type/:id.json", (_req: Request, res: Response) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -213,6 +220,8 @@ export function createServer(deps: ServerDeps): express.Express {
         if (
           err instanceof TranslationError ||
           err instanceof LlmSidecarError ||
+          err instanceof MtSidecarError ||
+          err instanceof EngineManagerError ||
           err instanceof ModelDownloadError
         ) {
           res.status(503).send(err.message);

@@ -80,8 +80,15 @@ describe("LLM catalog default", () => {
     const entry = resolveLlmModelCatalogEntry();
     expect(entry.id).toBe(DEFAULT_LLM_MODEL_ID);
     expect(entry.recommended).toBe(true);
+    expect(entry.engine).toBe("llm");
     expect(entry.filename).toBe("Qwen_Qwen3-1.7B-Q4_K_M.gguf");
     expect(entry.expectedBytes).toBe(1282439584);
+  });
+
+  it("resolves NLLB as engine=mt", () => {
+    const entry = resolveLlmModelCatalogEntry("nllb-200-distilled-600m-int8");
+    expect(entry.engine).toBe("mt");
+    expect(entry.filename).toBe("nllb-200-distilled-600M-ct2-int8");
   });
 });
 
@@ -151,5 +158,32 @@ describe("EnvVarManager product maps", () => {
     expect(env.TARGET_LANG).toBe(DEFAULT_TARGET_LANG);
     expect(env.LLM_MODEL_ID).toBe(DEFAULT_LLM_MODEL_ID);
     expect(env.PORT).toBe("8080");
+  });
+
+  it("NLLB catalog id sets MT_* and omits GGUF sha/url", () => {
+    const env = EnvVarManager.getEnvVarsFromConfig(
+      baseConfig({
+        product: "translated_subtitles",
+        addon: {
+          name: "Subs",
+          version: "1.0.0",
+          domain: "subs.local",
+          password: "password12",
+          provider: Provider.REAL_DEBRID,
+          torrentLimit: 15,
+          port: 8080,
+          targetLang: "heb",
+          llmModelId: "nllb-200-distilled-600m-int8",
+        },
+      })
+    );
+    expect(env.LLM_MODEL_ID).toBe("nllb-200-distilled-600m-int8");
+    expect(env.MT_MODEL_URL).toContain("nllb-200-distilled-600M-ct2-int8");
+    expect(env.MT_MODEL_DIR).toBe("nllb-200-distilled-600M-ct2-int8");
+    expect(env.MT_MODEL_SHA256).toHaveLength(64);
+    expect(env.MT_SERVER_URL).toBe("http://127.0.0.1:8082");
+    expect(env.LLM_MODEL_URL).toBeUndefined();
+    expect(env.LLM_MODEL_FILENAME).toBeUndefined();
+    expect(env.LLM_MODEL_SHA256).toBeUndefined();
   });
 });

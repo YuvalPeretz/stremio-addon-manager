@@ -8,6 +8,7 @@ import {
   GGUF_MAGIC,
   ModelDownloadError,
   removeInactiveGgufs,
+  removeInactiveMtDirs,
   sha256File,
   validateGgufFile,
 } from "../model-downloader.js";
@@ -177,5 +178,27 @@ describe("removeInactiveGgufs", () => {
     expect(result.deleted).toEqual([]);
     expect(fs.existsSync(dropIn)).toBe(true);
     expect(fs.existsSync(keep)).toBe(true);
+  });
+});
+
+describe("removeInactiveMtDirs", () => {
+  it("deletes other extract dirs and can wipe all when keep is empty", () => {
+    const dir = tmpDir();
+    dirs.push(dir);
+    const keep = path.join(dir, "keep-nllb");
+    const stale = path.join(dir, "stale-nllb");
+    fs.mkdirSync(keep, { recursive: true });
+    fs.mkdirSync(stale, { recursive: true });
+    fs.writeFileSync(path.join(keep, "model.bin"), "a");
+    fs.writeFileSync(path.join(stale, "model.bin"), "b");
+
+    const kept = removeInactiveMtDirs(dir, "keep-nllb");
+    expect(fs.existsSync(keep)).toBe(true);
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(kept.deleted).toEqual([stale]);
+
+    const wiped = removeInactiveMtDirs(dir, "");
+    expect(fs.existsSync(keep)).toBe(false);
+    expect(wiped.deleted).toEqual([keep]);
   });
 });

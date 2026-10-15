@@ -10,6 +10,7 @@ export const PRODUCT_ID = "translated_subtitles" as const;
 export const DEFAULT_TARGET_LANG = "heb";
 export const DEFAULT_PORT = 8080;
 export const DEFAULT_LLM_SERVER_URL = "http://127.0.0.1:8081";
+export const DEFAULT_MT_SERVER_URL = "http://127.0.0.1:8082";
 export const DEFAULT_OPENSUBTITLES_BASE_URL = "https://opensubtitles-v3.strem.io";
 export const DEFAULT_CACHE_TTL_SEC = 2_592_000; // 30 days
 export const DEFAULT_TRANSLATE_BATCH_SIZE = 8;
@@ -33,6 +34,15 @@ export const TRANSLATED_SUBTITLES_ENV_KEYS = [
   "LLM_SERVER_URL",
   "LLM_THREADS",
   "LLM_LLAMA_BIN",
+  "MT_SERVER_URL",
+  "MT_MODELS_DIR",
+  "MT_MODEL_URL",
+  "MT_MODEL_DIR",
+  "MT_MODEL_SHA256",
+  "MT_MODEL_BYTES",
+  "MT_MODEL_FILES",
+  "MT_PYTHON",
+  "MT_CT2_BIN",
   "OPENSUBTITLES_BASE_URL",
   "SUBTITLE_CACHE_DIR",
   "SUBTITLE_CACHE_TTL_SEC",
@@ -174,6 +184,79 @@ export const TRANSLATED_SUBTITLES_ENV_DEFINITIONS: readonly EnvVarDefinition[] =
   {
     key: "LLM_LLAMA_BIN",
     description: "Path to llama-server binary. Falls back to PATH.",
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "MT_SERVER_URL",
+    description: "CTranslate2 HTTP sidecar base URL",
+    default: DEFAULT_MT_SERVER_URL,
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "MT_MODELS_DIR",
+    description: "Durable directory for NLLB CTranslate2 snapshots",
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "MT_MODEL_URL",
+    description: "Pinned Hugging Face URL for NLLB model.bin",
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "MT_MODEL_DIR",
+    description: "Extract directory name under MT_MODELS_DIR",
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "MT_MODEL_SHA256",
+    description: "Expected SHA-256 of NLLB model.bin",
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "MT_MODEL_BYTES",
+    description: "Expected NLLB model.bin size in bytes",
+    type: "number",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "MT_MODEL_FILES",
+    description: "Comma-separated snapshot filenames for the NLLB directory",
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "MT_PYTHON",
+    description: "Python interpreter for mt-sidecar/server.py (default python3)",
+    type: "string",
+    required: false,
+    sensitive: false,
+    productOnly: true,
+  },
+  {
+    key: "MT_CT2_BIN",
+    description: "Optional CTranslate2 HTTP binary instead of python mt-sidecar/server.py",
     type: "string",
     required: false,
     sensitive: false,
