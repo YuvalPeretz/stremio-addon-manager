@@ -42,7 +42,14 @@ const api = {
     get: (addonId: string) => ipcRenderer.invoke("addon:get", addonId),
     getDefault: () => ipcRenderer.invoke("addon:getDefault"),
     setDefault: (addonId: string) => ipcRenderer.invoke("addon:setDefault", addonId),
-    create: (name: string, port: number, domain: string) => ipcRenderer.invoke("addon:create", name, port, domain),
+    create: (options: {
+      name: string;
+      type?: "classic" | "custom_script";
+      port?: number;
+      domain?: string;
+      publicUrl?: string;
+      managementUrl?: string;
+    }) => ipcRenderer.invoke("addon:create", options),
     delete: (addonId: string) => ipcRenderer.invoke("addon:delete", addonId),
   },
 
@@ -55,6 +62,25 @@ const api = {
     removeProgressListener: () => {
       ipcRenderer.removeAllListeners("install:progress");
     },
+  },
+
+  // Custom-script (dual Gateway) helpers
+  customScript: {
+    fetchScripts: (managementUrl: string, password: string) =>
+      ipcRenderer.invoke("customScript:fetchScripts", managementUrl, password),
+    fetchConfig: (managementUrl: string, password: string) =>
+      ipcRenderer.invoke("customScript:fetchConfig", managementUrl, password),
+    fetchLogs: (managementUrl: string, password: string, lines?: number) =>
+      ipcRenderer.invoke("customScript:fetchLogs", managementUrl, password, lines),
+    applyConfig: (
+      addonId: string,
+      options?: { scriptContent?: string; confirmScriptHash?: string; force?: boolean }
+    ) => ipcRenderer.invoke("customScript:applyConfig", addonId, options),
+  },
+
+  translatedSubtitles: {
+    switchModel: (addonId: string, modelId: string) =>
+      ipcRenderer.invoke("translatedSubtitles:switchModel", addonId, modelId),
   },
 
   // Service Management (with addonId support)
@@ -82,7 +108,7 @@ const api = {
     sync: (ssh?: unknown, addonId?: string, restartService?: boolean) =>
       ipcRenderer.invoke("env:sync", ssh, addonId, restartService),
     generate: (key: string, ssh?: unknown, addonId?: string) => ipcRenderer.invoke("env:generate", key, ssh, addonId),
-    getMetadata: () => ipcRenderer.invoke("env:getMetadata"),
+    getMetadata: (addonId?: string) => ipcRenderer.invoke("env:getMetadata", addonId),
   },
 
   // SSH
@@ -109,6 +135,45 @@ const api = {
     update: (id: string, updates: unknown) => ipcRenderer.invoke("profile:update", id, updates),
     getRecent: (limit?: number) => ipcRenderer.invoke("profile:getRecent", limit),
     test: (id: string) => ipcRenderer.invoke("profile:test", id),
+  },
+
+  // Party Server
+  party: {
+    install: (options: { addonId?: string; port?: number; addonUrl: string }) =>
+      ipcRenderer.invoke("party:install", options),
+    status: (addonId?: string) => ipcRenderer.invoke("party:status", addonId),
+    uninstall: (addonId?: string) => ipcRenderer.invoke("party:uninstall", addonId),
+    diagnose: (addonId?: string) => ipcRenderer.invoke("party:diagnose", addonId),
+    onProgress: (callback: (progress: unknown) => void) => {
+      ipcRenderer.on("party:progress", (_event, progress) => callback(progress));
+    },
+    removeProgressListener: () => {
+      ipcRenderer.removeAllListeners("party:progress");
+    },
+  },
+
+  // Update Management
+  update: {
+    check: (addonId?: string) => ipcRenderer.invoke("update:check", addonId),
+    addon: (addonId: string, options?: unknown) => ipcRenderer.invoke("update:addon", addonId, options),
+    multiple: (addonIds: string[], options?: unknown) => ipcRenderer.invoke("update:multiple", addonIds, options),
+    rollback: (addonId: string, options?: unknown) => ipcRenderer.invoke("update:rollback", addonId, options),
+    listBackups: (addonId: string) => ipcRenderer.invoke("update:list-backups", addonId),
+    history: (addonId: string) => ipcRenderer.invoke("update:history", addonId),
+    checkerStatus: () => ipcRenderer.invoke("update:checker-status"),
+    checkNow: () => ipcRenderer.invoke("update:check-now"),
+    onProgress: (callback: (data: { addonId: string; progress: unknown }) => void) => {
+      ipcRenderer.on("update:progress", (_event, data) => callback(data));
+    },
+    onUpdatesAvailable: (callback: (data: { count: number; updates: unknown[] }) => void) => {
+      ipcRenderer.on("updates-available", (_event, data) => callback(data));
+    },
+    removeProgressListener: () => {
+      ipcRenderer.removeAllListeners("update:progress");
+    },
+    removeUpdatesAvailableListener: () => {
+      ipcRenderer.removeAllListeners("updates-available");
+    },
   },
 };
 

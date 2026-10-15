@@ -7,6 +7,11 @@ import { loadConfig } from "./config.js";
 import { RealDebridClient } from "./real-debrid.js";
 import { CacheManager } from "./cache.js";
 import { createServer } from "./server.js";
+import { LocalLibraryManager } from "./local-library/manager.js";
+import { installServerLogCapture } from "./management/server-log.js";
+
+// Capture console output for the management Logs tab (before any server logging).
+installServerLogCapture();
 
 /**
  * Start the addon server
@@ -14,6 +19,7 @@ import { createServer } from "./server.js";
 function startServer(): void {
   // Load configuration
   const config = loadConfig();
+  installServerLogCapture(config);
 
   console.log("\n🚀 Starting Stremio Addon Server...\n");
   console.log("Configuration:");
@@ -28,7 +34,7 @@ function startServer(): void {
   console.log("\nCache Configuration:");
   console.log(`  - Metadata: ${config.cacheTtl.metadata}s (24h)`);
   console.log(`  - Torrent Search: ${config.cacheTtl.torrentSearch}s (6h)`);
-  console.log(`  - Streams: ${config.cacheTtl.streams}s (30m)`);
+  console.log(`  - Streams: ${config.cacheTtl.streams}s (24h)`);
   console.log("\nRate Limiting:");
   console.log(`  - Streams: ${config.rateLimits.streamMax} requests per ${config.rateLimits.streamWindow / 60000} minutes`);
   console.log(`  - Stats: ${config.rateLimits.statsMax} requests per ${config.rateLimits.statsWindow / 60000} minute`);
@@ -37,8 +43,10 @@ function startServer(): void {
   const rdClient = new RealDebridClient(config);
   const cacheManager = new CacheManager(config);
 
+  const localLibrary = new LocalLibraryManager(config);
+
   // Create Express server
-  const app = createServer(config, rdClient, cacheManager);
+  const app = createServer(config, rdClient, cacheManager, localLibrary);
 
   // Log cache stats every 10 minutes
   setInterval(() => {
@@ -48,8 +56,9 @@ function startServer(): void {
   // Start listening
   app.listen(config.port, () => {
     console.log(`\n✓ Server running on port ${config.port}`);
-    console.log(`\nEndpoints:`);
+    console.log(`\nPublic endpoints:`);
     console.log(`  - Landing: http://localhost:${config.port}/`);
+    console.log(`  - Health: http://localhost:${config.port}/health`);
     console.log(`  - Stats: http://localhost:${config.port}/stats`);
 
     if (config.authEnabled) {
@@ -63,21 +72,42 @@ function startServer(): void {
       console.log(`   Set ADDON_PASSWORD environment variable to enable authentication`);
     }
 
+    if (config.enableManagementApi) {
+      console.log(`\n🛠  Management API enabled (ENABLE_MANAGEMENT_API=true)`);
+      console.log(`  - UI: /:password/management`);
+      console.log(`  - Deploy scripts: /:password/management/api/deploy/scripts`);
+      console.log(`  - Config (redacted): /:password/management/api/config`);
+    } else {
+      console.log(`\n🛠  Management API disabled (public streaming; set ENABLE_MANAGEMENT_API=true on admin)`);
+    }
+
     console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     console.log("Server ready! Press Ctrl+C to stop.");
     console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
   });
 }
 
-// Handle uncaught exceptions
+// Handle uncaught exceptions gracefully - don't exit to prevent server downtime
 process.on("uncaughtException", (error) => {
-  console.error("Uncaught exception:", error);
-  process.exit(1);
+  console.error("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.error("⚠️  UNCAUGHT EXCEPTION - Server continuing to run");
+  console.error("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.error("Time:", new Date().toISOString());
+  console.error("Error:", error);
+  console.error("Stack:", (error as Error).stack);
+  console.error("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+  // Don't call process.exit(1) - let the server recover and continue
 });
 
-process.on("unhandledRejection", (error) => {
-  console.error("Unhandled rejection:", error);
-  process.exit(1);
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.error("⚠️  UNHANDLED PROMISE REJECTION - Server continuing to run");
+  console.error("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.error("Time:", new Date().toISOString());
+  console.error("Reason:", reason);
+  console.error("Promise:", promise);
+  console.error("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+  // Don't call process.exit(1) - let the server recover and continue
 });
 
 // Start the server

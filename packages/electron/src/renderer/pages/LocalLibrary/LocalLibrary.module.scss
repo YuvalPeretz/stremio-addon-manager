@@ -1,0 +1,53 @@
+.page {
+  padding: 24px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.section {
+  margin-bottom: 32px;
+}
+
+.browseBar {
+  margin-bottom: 16px;
+}
+
+.pathText {
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.browseRowSelected {
+  :global(.ant-table-cell) {
+    background: rgba(24, 144, 255, 0.1) !important;
+  }
+}
+
+.breadcrumbBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: 6px;
+}
+
+.breadcrumbLink {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--ant-color-link, #1677ff);
+  font: inherit;
+}
+
+.breadcrumbLink:hover {
+  text-decoration: underline;
+}
+
+.breadcrumbCurrent {
+  font-weight: 500;
+  color: var(--ant-color-text, inherit);
+}

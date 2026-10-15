@@ -65,6 +65,8 @@ export interface ServerConnectionConfig {
     token?: string;
     sshKey?: string;
   };
+  /** Health probe path under the base URL (default: health). Leading slash optional. */
+  healthPath?: string;
   timeout?: number;
   retries?: number;
 }

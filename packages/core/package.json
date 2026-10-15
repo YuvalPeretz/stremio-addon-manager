@@ -35,6 +35,12 @@
       "import": "./dist/config/index.js",
       "require": "./dist/config/index.js",
       "default": "./dist/config/index.js"
+    },
+    "./browser": {
+      "types": "./dist/config/browser.d.ts",
+      "import": "./dist/config/browser.js",
+      "require": "./dist/config/browser.js",
+      "default": "./dist/config/browser.js"
     }
   },
   "scripts": {
@@ -43,7 +49,8 @@
     "clean": "rm -rf dist",
     "type-check": "tsc --noEmit",
     "lint": "eslint src --ext .ts",
-    "test": "jest"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "node-ssh": "^13.0.0",

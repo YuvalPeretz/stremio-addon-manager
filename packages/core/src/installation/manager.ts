@@ -13,7 +13,8 @@ import { OSDetector } from '../os/detector.js';
 import { SSHManager } from '../ssh/manager.js';
 import { ServiceManager } from '../service/manager.js';
 import { OperatingSystem, LinuxDistribution } from '../types/common.js';
-import { AddonRegistryManager, generateServiceName, ConfigManager, EnvVarManager } from '../config/index.js';
+import { AddonRegistryManager, generateServiceName, ConfigManager, EnvVarManager, normalizeAddonProduct, productPackageDir } from '../config/index.js';
+import { resolveBundledProductPath } from './bundled-paths.js';
 import { ServiceFileManager } from '../service/file-manager.js';
 import type {
   InstallationOptions,
@@ -171,9 +172,9 @@ export class InstallationManager {
         this.skipStep(InstallationStep.SETUP_FAIL2BAN, 'Fail2ban disabled in configuration');
       }
 
-      // Step 7: Clone repository
+      // Step 7: Copy addon-server from bundled packages
       await this.executeStep(InstallationStep.CLONE_REPOSITORY, async () => {
-        await this.cloneRepository();
+        await this.cloneRepository(); // Note: Despite the name, this copies bundled files
       });
 
       // Step 8: Install dependencies
@@ -534,6 +535,8 @@ export class InstallationManager {
       host: target.host || '',
       port: target.port || 22,
       username: target.username || '',
+      password: target.password,
+      privateKeyPath: target.privateKeyPath,
     });
 
     await this.ssh.connect();
@@ -799,241 +802,37 @@ findtime = 600
   }
 
   /**
-   * Copy addon-server from bundled resources or clone repository
+   * Copy addon-server from bundled resources
    */
   private async cloneRepository(): Promise<void> {
     const targetDir = this.options.config.paths.addonDirectory;
     
-    // Try to use bundled addon-server first (faster, no network required)
+    // Get bundled addon-server path
     const bundledPath = await this.getBundledAddonServerPath();
-    if (bundledPath) {
-      logger.info('Using bundled addon-server', { bundledPath, targetDir });
-      await this.copyBundledAddonServer(bundledPath, targetDir);
-      return;
+    const product = normalizeAddonProduct(this.options.config.product);
+    const packageDir = productPackageDir(product);
+    if (!bundledPath) {
+      throw new Error(
+        `Bundled ${packageDir} not found. ` +
+        'Make sure you run "npm run build" to bundle the packages before installation. ' +
+        `The ${packageDir} package should be in the resources/ directory.`
+      );
     }
     
-    // Fallback to cloning from repository
-    logger.info('Bundled addon-server not found, cloning from repository');
-    await this.cloneFromRepository(targetDir);
+    logger.info('Using bundled product package', { product, packageDir, bundledPath, targetDir });
+    await this.copyBundledAddonServer(bundledPath, targetDir);
   }
 
   /**
-   * Get path to bundled addon-server if available
-   * Checks paths in priority order: Electron resources -> CLI resources -> monorepo
-   * 
-   * Option 2 Structure:
-   * - Electron: resources/cli/resources/addon-server (CLI bundled in Electron)
-   * - CLI: resources/addon-server (addon-server bundled in CLI)
-   * - Monorepo: packages/addon-server (development)
+   * Get path to bundled product package (addon-server or translated-subtitles).
    */
   private async getBundledAddonServerPath(): Promise<string | null> {
-    // Detect execution context for better logging
-    const executionContext = this.detectExecutionContext();
-    logger.debug('Detected execution context for addon-server path resolution', { executionContext });
-    
-    // Get base paths for resolution
-    // Use __dirname (core package location) as reference point for relative paths
-    const corePackageDir = __dirname; // This is core/dist/installation/manager.js location
-    const coreDistDir = path.dirname(corePackageDir); // core/dist/installation -> core/dist
-    const coreRootDir = path.dirname(coreDistDir); // core/dist -> core
-    const packagesDir = path.dirname(coreRootDir); // core -> packages
-    
-    // Define paths in priority order (as specified in Phase 3.1)
-    const pathChecks: Array<{ path: string; description: string; context: string }> = [];
-    
-    // 1. Electron packaged: Check environment variables first (set by Electron main process)
-    if (process.env.ELECTRON_RESOURCES_PATH) {
-      const resourcesPath = process.env.ELECTRON_RESOURCES_PATH;
-      pathChecks.push({
-        path: path.join(resourcesPath, 'cli', 'resources', 'addon-server'),
-        description: 'Electron packaged (from env, Option 2)',
-        context: 'Electron (packaged from env)'
-      });
-      // Also check legacy location
-      pathChecks.push({
-        path: path.join(resourcesPath, 'addon-server'),
-        description: 'Electron packaged (from env, legacy)',
-        context: 'Electron (legacy packaged from env)'
-      });
-    }
-    
-    // 2. Electron packaged: process.resourcesPath + '/cli/resources/addon-server'
-    if (typeof (process as any).resourcesPath !== 'undefined') {
-      const resourcesPath = (process as any).resourcesPath;
-      pathChecks.push({
-        path: path.join(resourcesPath, 'cli', 'resources', 'addon-server'),
-        description: 'Electron packaged (Option 2)',
-        context: 'Electron (packaged)'
-      });
-      // Also check legacy location
-      pathChecks.push({
-        path: path.join(resourcesPath, 'addon-server'),
-        description: 'Electron packaged (legacy)',
-        context: 'Electron (legacy packaged)'
-      });
-    }
-    
-    // 3. Electron dev: Check from ELECTRON_APP_PATH environment variable
-    if (process.env.ELECTRON_APP_PATH) {
-      const appPath = process.env.ELECTRON_APP_PATH;
-      pathChecks.push({
-        path: path.join(appPath, 'resources', 'cli', 'resources', 'addon-server'),
-        description: 'Electron dev (from env, Option 2)',
-        context: 'Electron (dev from env)'
-      });
-      pathChecks.push({
-        path: path.join(appPath, 'resources', 'addon-server'),
-        description: 'Electron dev (from env, legacy)',
-        context: 'Electron (dev from env, legacy)'
-      });
-    }
-    
-    // 4. Electron dev: Check relative to core package location
-    // When core is bundled in Electron, it's at: electron/dist/node_modules/@stremio-addon-manager/core/dist/...
-    // So we need to go up to find electron/resources/
-    // Try: core -> node_modules -> electron -> resources
-    const electronResourcesFromCore = path.join(coreRootDir, '..', '..', 'electron', 'resources', 'cli', 'resources', 'addon-server');
-    pathChecks.push({
-      path: electronResourcesFromCore,
-      description: 'Electron dev (from core, Option 2)',
-      context: 'Electron (dev from core)'
+    const product = normalizeAddonProduct(this.options.config.product);
+    logger.debug('Resolving bundled product path', {
+      product,
+      executionContext: this.detectExecutionContext(),
     });
-    
-    // 5. Electron dev: Check from process.cwd() (fallback for different execution contexts)
-    pathChecks.push({
-      path: path.join(process.cwd(), 'resources', 'cli', 'resources', 'addon-server'),
-      description: 'Electron dev (from cwd, Option 2)',
-      context: 'Electron (dev from cwd)'
-    });
-    
-    // 4. Electron direct: resources/addon-server (legacy fallback)
-    pathChecks.push({
-      path: path.join(process.cwd(), 'resources', 'addon-server'),
-      description: 'Electron direct (legacy fallback)',
-      context: 'Electron (legacy)'
-    });
-    
-    // 5. CLI packaged: resources/addon-server (CLI's own resources)
-    // When core is bundled in CLI, it's at: cli/resources/core/dist/...
-    // So we need to go up to find cli/resources/addon-server
-    const cliResourcesFromCore = path.join(coreRootDir, '..', 'addon-server');
-    pathChecks.push({
-      path: cliResourcesFromCore,
-      description: 'CLI packaged (from core)',
-      context: 'CLI (packaged from core)'
-    });
-    
-    // 6. CLI packaged: Check from process.cwd()
-    pathChecks.push({
-      path: path.join(process.cwd(), 'resources', 'addon-server'),
-      description: 'CLI packaged (from cwd)',
-      context: 'CLI (packaged from cwd)'
-    });
-    
-    // 7. CLI dev: Check relative to core package (monorepo structure)
-    // core -> packages -> cli -> resources -> addon-server
-    const cliDevFromCore = path.join(packagesDir, 'cli', 'resources', 'addon-server');
-    pathChecks.push({
-      path: cliDevFromCore,
-      description: 'CLI dev (from core, monorepo)',
-      context: 'CLI (dev from core)'
-    });
-    
-    // 8. CLI dev: Check from process.cwd()
-    pathChecks.push({
-      path: path.join(process.cwd(), '..', 'cli', 'resources', 'addon-server'),
-      description: 'CLI dev (from cwd, monorepo)',
-      context: 'CLI (dev from cwd)'
-    });
-    
-    // 9. Monorepo: packages/addon-server (development)
-    const monorepoAddonServer = path.join(packagesDir, 'addon-server');
-    pathChecks.push({
-      path: monorepoAddonServer,
-      description: 'Monorepo (from core)',
-      context: 'Monorepo (from core)'
-    });
-    pathChecks.push({
-      path: path.join(process.cwd(), 'packages', 'addon-server'),
-      description: 'Monorepo (from cwd)',
-      context: 'Monorepo (from cwd)'
-    });
-    
-    // 10. Additional fallbacks for Electron package in monorepo
-    const electronMonorepoPath = path.join(packagesDir, 'electron', 'resources', 'cli', 'resources', 'addon-server');
-    pathChecks.push({
-      path: electronMonorepoPath,
-      description: 'Electron package in monorepo (from core, Option 2)',
-      context: 'Electron (monorepo from core)'
-    });
-    pathChecks.push({
-      path: path.join(process.cwd(), 'packages', 'electron', 'resources', 'cli', 'resources', 'addon-server'),
-      description: 'Electron package in monorepo (from cwd, Option 2)',
-      context: 'Electron (monorepo from cwd)'
-    });
-
-    logger.debug('Checking for bundled addon-server', { 
-      totalPaths: pathChecks.length,
-      executionContext,
-      cwd: process.cwd(),
-      electronAppPath: process.env.ELECTRON_APP_PATH,
-      electronResourcesPath: process.env.ELECTRON_RESOURCES_PATH,
-      processResourcesPath: typeof (process as any).resourcesPath !== 'undefined' ? (process as any).resourcesPath : undefined,
-      corePackageDir,
-      coreRootDir,
-      packagesDir
-    });
-    
-    for (const check of pathChecks) {
-      try {
-        // Resolve to absolute path for better logging
-        const absolutePath = path.isAbsolute(check.path) ? check.path : path.resolve(check.path);
-        logger.debug(`Checking path: ${check.description}`, { 
-          path: check.path,
-          absolutePath,
-          context: check.context
-        });
-        const packageJsonPath = path.join(check.path, 'package.json');
-        const distPath = path.join(check.path, 'dist');
-        
-        // Check if both package.json and dist exist
-        // Bundled resources are always on local machine, so force local check
-        const packageExists = await this.checkPathExists(packageJsonPath, true);
-        const distExists = await this.checkPathExists(distPath, true);
-        
-        if (packageExists && distExists) {
-          logger.info('Found bundled addon-server', { 
-            path: check.path,
-            absolutePath,
-            context: check.context,
-            description: check.description
-          });
-          return check.path;
-        } else {
-          logger.debug(`Path not found: ${check.description}`, { 
-            path: check.path,
-            absolutePath,
-            packageExists,
-            distExists
-          });
-        }
-      } catch (error) {
-        // Continue checking other paths
-        logger.debug(`Path check failed: ${check.description}`, { 
-          path: check.path, 
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-    }
-    
-    logger.warn('Bundled addon-server not found in any expected location', {
-      checkedPaths: pathChecks.length,
-      executionContext,
-      cwd: process.cwd(),
-      electronAppPath: process.env.ELECTRON_APP_PATH,
-      electronResourcesPath: process.env.ELECTRON_RESOURCES_PATH
-    });
-    return null;
+    return resolveBundledProductPath(product, 'built');
   }
 
   /**
@@ -1534,148 +1333,6 @@ import "./bin/server.js";
   }
 
   /**
-   * Clone repository from GitHub
-   */
-  private async cloneFromRepository(targetDir: string): Promise<void> {
-    logger.info('Cloning repository');
-
-    let repoUrl = this.options.repoUrl || 'https://github.com/yourusername/stremio-addon-server.git';
-    const branch = this.options.repoBranch || 'main';
-    
-    // Convert HTTPS GitHub URLs to SSH format if possible (avoids credential prompts)
-    // This only works if SSH keys are set up, but prevents interactive prompts
-    if (repoUrl.startsWith('https://github.com/') && !repoUrl.includes('@')) {
-      const sshUrl = repoUrl.replace('https://github.com/', 'git@github.com:');
-      logger.info('Converted HTTPS URL to SSH format to avoid credential prompts', { 
-        original: repoUrl, 
-        converted: sshUrl 
-      });
-      repoUrl = sshUrl;
-    }
-
-    // Get current username for ownership
-    const whoamiResult = await this.execCommand('whoami');
-    const username = whoamiResult.stdout.trim() || whoamiResult.stderr.trim() || 'root';
-
-    // Remove existing directory if present (try with sudo first, fallback to regular)
-    const dirExists = await this.execCommand(`test -d ${targetDir}`);
-    if (dirExists.code === 0) {
-      logger.info('Removing existing directory', { targetDir });
-      const removeResult = await this.execSudo(`rm -rf ${targetDir}`);
-      if (removeResult.code !== 0) {
-        logger.warn('Failed to remove existing directory with sudo, trying without', { error: removeResult.stderr });
-        const fallbackResult = await this.execCommand(`rm -rf ${targetDir}`);
-        if (fallbackResult.code !== 0) {
-          throw new Error(`Failed to remove existing directory: ${fallbackResult.stderr}`);
-        }
-      }
-    }
-
-    // Create the target directory with sudo and set ownership
-    // This ensures the directory can be created with correct permissions
-    // Git clone will fail if the directory exists, so we'll remove it after setting up permissions
-    logger.info('Preparing target directory with correct permissions', { targetDir });
-    const mkdirResult = await this.execSudo(`mkdir -p ${targetDir}`);
-    if (mkdirResult.code !== 0) {
-      throw new Error(`Failed to create target directory: ${mkdirResult.stderr}`);
-    }
-    
-    // Set ownership to current user so they can write to it
-    const chownResult = await this.execSudo(`chown -R ${username}:${username} ${targetDir}`);
-    if (chownResult.code !== 0) {
-      throw new Error(`Failed to set ownership of target directory: ${chownResult.stderr}`);
-    }
-    
-    // Remove the directory so git clone can create it (git clone requires the directory to not exist)
-    const removePrepResult = await this.execCommand(`rm -rf ${targetDir}`);
-    if (removePrepResult.code !== 0) {
-      logger.warn('Failed to remove prepared directory, git clone may fail', { error: removePrepResult.stderr });
-    }
-
-    // Clone repository
-    // Set GIT_TERMINAL_PROMPT=0 to prevent interactive credential prompts in non-interactive sessions
-    // Set GIT_ASKPASS=echo to prevent password prompts
-    const gitEnv = 'GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=echo';
-    
-    // If the directory was prepared above, git clone will fail because it exists
-    // So we need to clone to a temp location first, then move it
-    let cloneSuccess = false;
-    let tempDir: string | undefined;
-    
-    const result = await this.execCommand(`${gitEnv} git clone -b ${branch} ${repoUrl} ${targetDir}`);
-    
-    if (result.code === 0) {
-      cloneSuccess = true;
-    } else if (result.stderr.includes('Permission denied') || result.stderr.includes('could not create work tree')) {
-      // Clone failed due to permissions - use temp directory approach
-      logger.info('Clone failed due to permissions, using temp directory approach', { targetDir });
-      tempDir = `${targetDir}.tmp.${Date.now()}`;
-      
-      // Clone to temp location (in user's home or /tmp)
-      const tempCloneResult = await this.execCommand(`${gitEnv} git clone -b ${branch} ${repoUrl} ${tempDir}`);
-      if (tempCloneResult.code !== 0) {
-        // Check if it's an authentication error
-        if (tempCloneResult.stderr.includes('Permission denied') || 
-            tempCloneResult.stderr.includes('could not read Username') ||
-            tempCloneResult.stderr.includes('Authentication failed')) {
-          throw new Error(
-            `Failed to clone repository: Authentication required. ` +
-            `Please ensure:\n` +
-            `1. The repository is public, or\n` +
-            `2. SSH keys are configured for private repositories, or\n` +
-            `3. Use an SSH URL format (git@github.com:user/repo.git) instead of HTTPS\n` +
-            `Original error: ${tempCloneResult.stderr}`
-          );
-        }
-        throw new Error(`Failed to clone repository to temp location: ${tempCloneResult.stderr}`);
-      }
-      
-      // Move temp directory to target with sudo
-      const moveResult = await this.execSudo(`mv ${tempDir} ${targetDir}`);
-      if (moveResult.code !== 0) {
-        // Clean up temp directory
-        await this.execCommand(`rm -rf ${tempDir}`);
-        throw new Error(`Failed to move cloned repository: ${moveResult.stderr}`);
-      }
-      
-      // Set ownership of moved directory
-      const chownResult = await this.execSudo(`chown -R ${username}:${username} ${targetDir}`);
-      if (chownResult.code !== 0) {
-        logger.warn('Failed to set ownership of cloned directory', { error: chownResult.stderr });
-      }
-      
-      cloneSuccess = true;
-    } else {
-      // Check if it's an authentication error
-      if (result.stderr.includes('could not read Username') || 
-          result.stderr.includes('Authentication failed') ||
-          result.stderr.includes('Permission denied (publickey)')) {
-        throw new Error(
-          `Failed to clone repository: Authentication required. ` +
-          `Please ensure:\n` +
-          `1. The repository is public, or\n` +
-          `2. SSH keys are configured for private repositories, or\n` +
-          `3. Use an SSH URL format (git@github.com:user/repo.git) instead of HTTPS\n` +
-          `Original error: ${result.stderr}`
-        );
-      }
-      throw new Error(`Failed to clone repository: ${result.stderr}`);
-    }
-    
-    if (!cloneSuccess) {
-      throw new Error('Failed to clone repository');
-    }
-    
-    // Ensure final ownership is correct (in case clone succeeded but ownership is wrong)
-    const finalChownResult = await this.execSudo(`chown -R ${username}:${username} ${targetDir}`);
-    if (finalChownResult.code !== 0) {
-      logger.warn('Failed to set final ownership of cloned directory', { error: finalChownResult.stderr });
-    }
-
-    logger.info('Repository cloned', { targetDir });
-  }
-
-  /**
    * Install dependencies
    */
   private async installDependencies(): Promise<void> {
@@ -1826,11 +1483,6 @@ server {
         # Error handling for backend connection failures
         proxy_connect_timeout 5s;
         proxy_read_timeout 10s;
-        
-        # CORS headers for actual response (backend also sets these, but ensure they're present)
-        add_header Access-Control-Allow-Origin * always;
-        add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
     }
 
     # Stremio stream endpoint
@@ -1860,11 +1512,54 @@ server {
         proxy_read_timeout 300s;
         proxy_connect_timeout 75s;
         proxy_send_timeout 300s;
-        
-        # CORS headers for actual response (backend also sets these, but ensure they're present)
-        add_header Access-Control-Allow-Origin * always;
-        add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+    }
+
+    # Management UI + POST /remake (stream pipeline; same budget as stream JSON)
+    location ~ ^/[^/]+/management(/|$) {
+        proxy_pass http://localhost:${port};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_connect_timeout 75s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    # Local library API (disk I/O listing dirs can exceed 10s on a Pi; was causing HTTP 504 via catch-all)
+    # Matches /local-library/... and /:password/local-library/...
+    location ~ ^/(?:[^/]+/)?local-library(/|$) {
+        proxy_pass http://localhost:${port};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_connect_timeout 75s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    # Video proxy — long-lived byte streaming from Real-Debrid CDN.
+    # Needs its own location because video streams can last hours and must not
+    # be subject to the catch-all's shorter timeouts or Nginx response buffering.
+    location ~ ^/([^/]+)/proxy$ {
+        proxy_pass http://localhost:${port}/$1/proxy$is_args$args;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+
+        proxy_buffering off;
+
+        proxy_connect_timeout 75s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
     }
 
     # Catch-all: proxy all other paths to backend
@@ -1877,9 +1572,10 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-Host $host;
         
-        # Error handling for backend connection failures
-        proxy_connect_timeout 5s;
-        proxy_read_timeout 10s;
+        # Allow slow JSON/API responses (reindex, heavy endpoints); 10s caused frequent 504s
+        proxy_connect_timeout 75s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
     }
 }
 `;
@@ -1923,14 +1619,14 @@ server {
       
       logger.debug('Checking for certificate files directly', { certDir, certPath, keyPath });
       
-      const certFileExists = await this.execCommand(`test -f "${certPath}" && echo "EXISTS" || echo "MISSING"`);
-      const keyFileExists = await this.execCommand(`test -f "${keyPath}" && echo "EXISTS" || echo "MISSING"`);
+      const certFileExists = await this.execSudo(`test -f "${certPath}" && echo "EXISTS" || echo "MISSING"`);
+      const keyFileExists = await this.execSudo(`test -f "${keyPath}" && echo "EXISTS" || echo "MISSING"`);
       
       if (!certFileExists.stdout.includes('MISSING') && !keyFileExists.stdout.includes('MISSING')) {
         logger.info('Found certificate files directly in filesystem', { certPath, keyPath });
         
         // Verify certificate is valid by checking expiry date using openssl
-        const certInfoResult = await this.execCommand(`openssl x509 -in "${certPath}" -noout -dates -subject 2>&1`);
+        const certInfoResult = await this.execSudo(`openssl x509 -in "${certPath}" -noout -dates -subject 2>&1`);
         
         if (certInfoResult.code === 0) {
           // Parse expiry date from openssl output
@@ -2099,9 +1795,9 @@ server {
       const certificatePath = certPathMatch[1].trim();
       const privateKeyPath = keyPathMatch[1].trim();
 
-      // Verify certificate files exist
-      const certExists = await this.execCommand(`test -f "${certificatePath}" && echo "EXISTS" || echo "MISSING"`);
-      const keyExists = await this.execCommand(`test -f "${privateKeyPath}" && echo "EXISTS" || echo "MISSING"`);
+      // Verify certificate files exist (sudo required — /etc/letsencrypt/live/ is root-only)
+      const certExists = await this.execSudo(`test -f "${certificatePath}" && echo "EXISTS" || echo "MISSING"`);
+      const keyExists = await this.execSudo(`test -f "${privateKeyPath}" && echo "EXISTS" || echo "MISSING"`);
 
       if (certExists.stdout.includes('MISSING') || keyExists.stdout.includes('MISSING')) {
         logger.warn('Certificate files are missing', {
@@ -2229,10 +1925,11 @@ server {
       existingConfig = configContentResult.stdout;
     }
 
-    // Check if config already has SSL configured
+    // Always regenerate the full nginx config even when SSL is already present.
+    // Template changes (new location blocks, updated timeouts, proxy_buffering)
+    // must be picked up on every reinstall/update.
     if (existingConfig.includes('listen 443') && existingConfig.includes(certificatePath)) {
-      logger.info('Nginx config already has SSL configured with this certificate', { domain });
-      return;
+      logger.info('Nginx config already has SSL — regenerating to apply latest template', { domain });
     }
 
     // Build complete Nginx config with SSL
@@ -2326,11 +2023,6 @@ server {
         # Error handling for backend connection failures
         proxy_connect_timeout 5s;
         proxy_read_timeout 10s;
-        
-        # CORS headers for actual response (backend also sets these, but ensure they're present)
-        add_header Access-Control-Allow-Origin * always;
-        add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
     }
 
     # Stremio stream endpoint
@@ -2360,11 +2052,53 @@ server {
         proxy_read_timeout 300s;
         proxy_connect_timeout 75s;
         proxy_send_timeout 300s;
-        
-        # CORS headers for actual response (backend also sets these, but ensure they're present)
-        add_header Access-Control-Allow-Origin * always;
-        add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+    }
+
+    # Management UI + POST /remake (stream pipeline; same budget as stream JSON)
+    location ~ ^/[^/]+/management(/|$) {
+        proxy_pass http://localhost:${port};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_connect_timeout 75s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    # Local library API (disk I/O listing dirs can exceed 10s on a Pi; was causing HTTP 504 via catch-all)
+    location ~ ^/(?:[^/]+/)?local-library(/|$) {
+        proxy_pass http://localhost:${port};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_connect_timeout 75s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    # Video proxy — long-lived byte streaming from Real-Debrid CDN.
+    # Needs its own location because video streams can last hours and must not
+    # be subject to the catch-all's shorter timeouts or Nginx response buffering.
+    location ~ ^/([^/]+)/proxy$ {
+        proxy_pass http://localhost:${port}/$1/proxy$is_args$args;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+
+        proxy_buffering off;
+
+        proxy_connect_timeout 75s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
     }
 
     # Catch-all: proxy all other paths to backend
@@ -2377,9 +2111,9 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-Host $host;
         
-        # Error handling for backend connection failures
-        proxy_connect_timeout 5s;
-        proxy_read_timeout 10s;
+        proxy_connect_timeout 75s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
     }
 }
 `;
@@ -2649,7 +2383,32 @@ server {
         tokenPrefix: rdToken.substring(0, 4) + '...',
       });
     }
-    
+
+    const explicitLib = this.options.config.paths.localLibraryDataDir;
+    let localLibraryDir: string | null = null;
+    if (explicitLib !== undefined && String(explicitLib).trim() === "") {
+      localLibraryDir = null;
+    } else {
+      const dir = (explicitLib?.trim() || path.posix.join(targetDir, "local-library")).replace(/\/+$/, "");
+      localLibraryDir = dir || null;
+    }
+    const localLibraryEnvBlock = localLibraryDir
+      ? `Environment=LOCAL_LIBRARY_DATA_DIR=${localLibraryDir}\n`
+      : "";
+
+    // Provider env vars (only emit non-default values to keep service file readable)
+    const torboxToken = this.options.config.secrets.torboxToken?.trim() || '';
+    const torboxEnvBlock = torboxToken ? `Environment=TORBOX_API_TOKEN=${torboxToken}\n` : '';
+    const streamProviderOrder = this.options.config.addon.streamProviderOrder;
+    const streamProviderOrderStr = Array.isArray(streamProviderOrder) ? streamProviderOrder.join(',') : (streamProviderOrder as string | undefined) || '';
+    const providerOrderEnvBlock = streamProviderOrderStr && streamProviderOrderStr !== 'real-debrid'
+      ? `Environment=STREAM_PROVIDER_ORDER=${streamProviderOrderStr}\n`
+      : '';
+    const streamProviderMode = this.options.config.addon.streamProviderMode;
+    const providerModeEnvBlock = streamProviderMode && streamProviderMode !== 'parallel'
+      ? `Environment=STREAM_PROVIDER_MODE=${streamProviderMode}\n`
+      : '';
+
     const serviceConfig = `
 [Unit]
 Description=Stremio Private Addon: ${addonName}
@@ -2670,10 +2429,11 @@ Environment=RD_API_TOKEN=${rdToken}
 Environment=ADDON_PASSWORD=${this.options.config.addon.password}
 Environment=ADDON_DOMAIN=${domain}
 Environment=TORRENT_LIMIT=${this.options.config.addon.torrentLimit}
+Environment=ENABLE_MANAGEMENT_API=true
 ${this.options.config.addon.availabilityCheckLimit ? `Environment=AVAILABILITY_CHECK_LIMIT=${this.options.config.addon.availabilityCheckLimit}` : ''}
 ${this.options.config.addon.maxStreams ? `Environment=MAX_STREAMS=${this.options.config.addon.maxStreams}` : ''}
 ${this.options.config.addon.maxConcurrency ? `Environment=MAX_CONCURRENCY=${this.options.config.addon.maxConcurrency}` : ''}
-
+${localLibraryEnvBlock}${torboxEnvBlock}${providerOrderEnvBlock}${providerModeEnvBlock}
 [Install]
 WantedBy=multi-user.target
 `;
@@ -2717,6 +2477,17 @@ WantedBy=multi-user.target
       throw new Error(`Service file was not created at ${servicePath}. Check permissions and disk space.`);
     }
     logger.info('Service file created and verified', { servicePath });
+
+    if (localLibraryDir) {
+      logger.info('Creating local library data directory', { localLibraryDir });
+      const mkdirLib = await this.execSudo(`mkdir -p ${localLibraryDir}`);
+      if (mkdirLib.code !== 0) {
+        logger.warn('Failed to mkdir local library data dir (non-fatal)', {
+          localLibraryDir,
+          stderr: mkdirLib.stderr,
+        });
+      }
+    }
 
     // Reload systemd daemon to recognize the new service
     logger.info('Reloading systemd daemon', { serviceName });
@@ -2833,10 +2604,20 @@ WantedBy=multi-user.target
   }
 
   /**
-   * Configure DuckDNS cron job only (assumes immediate update was already done)
+   * Configure DuckDNS cron job + on-host maintenance watchdog.
+   *
+   * The generated ~/duckdns/duck.sh script runs every 5 minutes and:
+   *   1. Updates DuckDNS with the Pi's current public IP.
+   *   2. Restarts the addon service if it has stopped.
+   *   3. Restarts nginx if it has stopped.
+   *
+   * The script is written to ~/duckdns/duck.sh (consistent path that overwrites
+   * any legacy script at a different location).  The crontab is deduplicated so
+   * only one entry for this script ever exists, preventing the "both old and new
+   * script run" problem that arises when the function is called more than once.
    */
   private async configureDuckDNSCronJob(): Promise<void> {
-    logger.info('Setting up DuckDNS cron job for periodic IP updates');
+    logger.info('Setting up DuckDNS cron job and on-host maintenance watchdog');
 
     const duckdnsToken = this.options.config.secrets.duckdnsToken;
     if (!duckdnsToken) {
@@ -2845,19 +2626,58 @@ WantedBy=multi-user.target
     }
 
     const domain = this.options.config.addon.domain.replace('.duckdns.org', '');
+    const serviceName = this.options.config.serviceName ?? `stremio-addon-${this.options.config.addon.name ?? 'default'}`;
+    const scriptDir = '~/duckdns';
+    const scriptPath = `${scriptDir}/duck.sh`;
+    const duckLogPath = `${scriptDir}/duck.log`;
+    const maintLogPath = `${scriptDir}/maintenance.log`;
 
-    // Create update script for cron job
-    const updateScript = `#!/bin/bash
-echo url="https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}&ip=" | curl -k -o ~/duckdns.log -K -
-`;
+    // Build the maintenance script.  Domain, token, and service name are
+    // interpolated now (TypeScript); $(date ...) and systemctl calls are
+    // preserved as-is for runtime execution on the Pi.
+    const maintenanceScript = [
+      '#!/bin/bash',
+      '# Stremio Addon Maintenance Script — auto-generated, do not edit manually.',
+      '# Managed by stremio-addon-manager. Runs every 5 minutes via cron.',
+      '',
+      '# ── 1. Update DuckDNS with current public IP ──────────────────────────',
+      `curl -k "https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}&ip=" -o ${duckLogPath} 2>&1`,
+      '',
+      '# ── 2. Rotate maintenance log if > 500 KB ─────────────────────────────',
+      `if [ -f ${maintLogPath} ] && [ "$(wc -c < ${maintLogPath})" -gt 512000 ]; then`,
+      `  tail -n 200 ${maintLogPath} > ${maintLogPath}.tmp && mv ${maintLogPath}.tmp ${maintLogPath}`,
+      'fi',
+      '',
+      '# ── 3. Ensure addon service is running ────────────────────────────────',
+      `if ! systemctl is-active --quiet ${serviceName}; then`,
+      `  echo "$(date '+%Y-%m-%d %H:%M:%S') [watchdog] ${serviceName} not active — restarting" >> ${maintLogPath}`,
+      `  sudo systemctl start ${serviceName} >> ${maintLogPath} 2>&1`,
+      'fi',
+      '',
+      '# ── 4. Ensure nginx is running ────────────────────────────────────────',
+      'if ! systemctl is-active --quiet nginx; then',
+      `  echo "$(date '+%Y-%m-%d %H:%M:%S') [watchdog] nginx not active — restarting" >> ${maintLogPath}`,
+      `  sudo systemctl start nginx >> ${maintLogPath} 2>&1`,
+      'fi',
+    ].join('\n');
 
-    await this.execCommand('echo \'' + updateScript + '\' > ~/duckdns.sh');
-    await this.execCommand('chmod +x ~/duckdns.sh');
+    // Ensure the directory exists, then write the script via heredoc.
+    // The heredoc delimiter is single-quoted ('MAINT_EOF') so the shell does NOT
+    // interpret the $(date ...) calls during write — they are preserved literally
+    // in the script file and executed at runtime when cron fires.
+    await this.execCommand(`mkdir -p ${scriptDir}`);
+    await this.execCommand(`cat > ${scriptPath} << 'MAINT_EOF'\n${maintenanceScript}\nMAINT_EOF`);
+    await this.execCommand(`chmod +x ${scriptPath}`);
 
-    // Add to crontab (run every 5 minutes)
-    await this.execCommand('(crontab -l 2>/dev/null; echo "*/5 * * * * ~/duckdns.sh >/dev/null 2>&1") | crontab -');
+    // Deduplicate crontab: remove every existing entry that references duck or
+    // duckdns (covers legacy ~/duckdns.sh, ~/duckdns/duck.sh, and full paths
+    // like /home/user/duckdns/duck.sh), then add exactly one entry for the new
+    // script path.
+    await this.execCommand(
+      `(crontab -l 2>/dev/null | grep -Ev 'duck|duckdns'; echo "*/5 * * * * ${scriptPath} >/dev/null 2>&1") | crontab -`
+    );
 
-    logger.info('DuckDNS cron job configured (runs every 5 minutes)');
+    logger.info('DuckDNS + maintenance cron configured (runs every 5 minutes)', { domain, serviceName, scriptPath });
   }
 
   /**
@@ -3098,6 +2918,7 @@ echo url="https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}
         serviceName,
         port,
         domain,
+        product: normalizeAddonProduct(this.options.config.product),
       });
 
       // Save registry
@@ -3130,6 +2951,870 @@ echo url="https://www.duckdns.org/update?domains=${domain}&token=${duckdnsToken}
     }
     // Fallback to legacy name
     return 'stremio-addon';
+  }
+
+  /**
+   * Deploy party-server to the same target machine as the addon-server.
+   * Reuses the existing SSH connection and paths from the addon config.
+   * This is a standalone deployment flow: copy files, npm install, create service, configure nginx, start.
+   */
+  public async deployPartyServer(partyOptions: {
+    port?: number;
+    addonUrl: string;
+    progressCallback?: ProgressCallback;
+  }): Promise<{ success: boolean; partyUrl?: string; error?: string }> {
+    const partyPort = partyOptions.port || 7777;
+    const partyServiceName = 'stremio-party-server';
+    const partyInstallDir = '/opt/stremio-party-server';
+    const domain = this.options.config.addon.domain;
+    const progressCb = partyOptions.progressCallback || this.progressCallback;
+
+    const reportProgress = (step: string, message: string, progress: number) => {
+      progressCb?.({
+        step: step as InstallationStep,
+        status: StepStatus.IN_PROGRESS,
+        message,
+        progress,
+        timestamp: new Date(),
+      });
+    };
+
+    try {
+      // Step 1: Connect if remote and not already connected
+      if (this.options.config.installation.type === 'remote' && !this.ssh) {
+        reportProgress('connect', 'Connecting to remote server...', 5);
+        await this.connectToRemote();
+      }
+      reportProgress('connect', 'Connected to server', 10);
+
+      // Step 2: Stop existing service if running (graceful update)
+      const existingStatus = await this.execCommand(`systemctl is-active ${partyServiceName} 2>/dev/null || true`);
+      if (existingStatus.stdout.trim() === 'active') {
+        reportProgress('clone_repository', 'Stopping existing party-server for update...', 12);
+        await this.execSudo(`systemctl stop ${partyServiceName}`).catch(() => {});
+        logger.info('Stopped existing party-server service');
+      }
+
+      // Step 3: Locate bundled party-server
+      reportProgress('clone_repository', 'Locating bundled party-server...', 15);
+      const bundledPath = await this.getBundledPartyServerPath();
+      if (!bundledPath) {
+        return { success: false, error: 'Bundled party-server not found. Make sure the party-server package is built and bundled in CLI resources.' };
+      }
+      logger.info('Found bundled party-server', { bundledPath });
+
+      // Step 4: Remove old installation directory to ensure clean update
+      reportProgress('clone_repository', 'Cleaning previous installation...', 17);
+      await this.execSudo(`rm -rf ${partyInstallDir}`).catch(() => {});
+      await this.execSudo(`mkdir -p ${partyInstallDir}`).catch(() => {});
+
+      // Step 5: Copy files to target
+      reportProgress('clone_repository', 'Copying party-server files...', 20);
+      await this.copyBundledPackage(bundledPath, partyInstallDir, 'party-server');
+      reportProgress('clone_repository', 'Party-server files copied', 35);
+
+      // Step 3b: Ensure FFmpeg is installed — required for AC3→AAC audio transcoding
+      // so Chrome can play Real-Debrid MKV streams.  This is a no-op if already installed.
+      reportProgress('install_dependencies', 'Checking FFmpeg for audio transcoding...', 37);
+      if (this.ssh) {
+        const ffmpegCheck = await this.execCommand('which ffmpeg');
+        if (ffmpegCheck.code !== 0) {
+          logger.info('FFmpeg not found, installing via apt-get...');
+          await this.execSudo('apt-get install -y ffmpeg');
+          logger.info('FFmpeg installed successfully');
+        } else {
+          logger.info('FFmpeg already installed at: ' + ffmpegCheck.stdout.trim());
+        }
+      }
+
+      // Step 4: Install npm dependencies
+      reportProgress('install_dependencies', 'Installing party-server dependencies...', 40);
+      const packageJsonPath = this.ssh ? path.posix.join(partyInstallDir, 'package.json') : path.join(partyInstallDir, 'package.json');
+      const packageJsonExists = await this.checkPathExists(packageJsonPath, !this.ssh);
+      if (!packageJsonExists) {
+        return { success: false, error: `package.json not found at ${packageJsonPath} after copy.` };
+      }
+      const npmResult = await this.execCommand(`cd ${partyInstallDir} && npm install --production`);
+      if (npmResult.code !== 0) {
+        return { success: false, error: `npm install failed: ${npmResult.stderr}` };
+      }
+      reportProgress('install_dependencies', 'Dependencies installed', 55);
+
+      // Step 5: Create entry point (server.js)
+      reportProgress('create_service', 'Creating party-server entry point...', 58);
+      const serverJsContent = `#!/usr/bin/env node\nimport "./dist/index.js";\n`;
+      const serverJsPath = this.ssh ? path.posix.join(partyInstallDir, 'server.js') : path.join(partyInstallDir, 'server.js');
+      if (this.ssh) {
+        const fsP2 = await import('node:fs/promises');
+        const osModule2 = await import('node:os');
+        const localEntryTmp = path.join(osModule2.tmpdir(), `party-server-entry.${Date.now()}.js`);
+        const remoteEntryTmp = `/tmp/party-server-entry.${Date.now()}.js`;
+        await fsP2.writeFile(localEntryTmp, serverJsContent, 'utf-8');
+        try {
+          await this.ssh.transferFile(localEntryTmp, remoteEntryTmp);
+        } finally {
+          await fsP2.unlink(localEntryTmp).catch(() => {});
+        }
+        await this.execSudo(`mv "${remoteEntryTmp}" "${serverJsPath}" && chmod +x "${serverJsPath}"`);
+      } else {
+        const fsModule = await import('fs');
+        fsModule.writeFileSync(serverJsPath, serverJsContent);
+        fsModule.chmodSync(serverJsPath, 0o755);
+      }
+
+      // Step 6: Open firewall port if firewall is enabled
+      if (this.options.config.features.firewall) {
+        reportProgress('setup_firewall', 'Opening firewall port for party-server...', 60);
+        await this.execSudo(`ufw allow ${partyPort}/tcp`).catch(() => {});
+      }
+
+      // Step 7: Create systemd service
+      reportProgress('create_service', 'Creating party-server systemd service...', 65);
+      const nodeCheck = await this.execCommand('which node 2>/dev/null || echo "/usr/bin/node"');
+      const nodePath = nodeCheck.stdout.trim() || '/usr/bin/node';
+
+      const serviceConfig = `
+[Unit]
+Description=Stremio Party Viewing Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${partyInstallDir}
+ExecStart=${nodePath} ${partyInstallDir}/server.js
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+Environment=NODE_ENV=production
+Environment=PARTY_PORT=${partyPort}
+Environment=PARTY_ADDON_URL=${partyOptions.addonUrl}
+Environment=PARTY_ADDON_PORT=${this.options.config.addon.port || 7000}
+
+[Install]
+WantedBy=multi-user.target
+`;
+
+      const servicePath = `/etc/systemd/system/${partyServiceName}.service`;
+      if (this.ssh) {
+        const fsP = await import('node:fs/promises');
+        const osModule = await import('node:os');
+        const localServiceTmp = path.join(osModule.tmpdir(), `${partyServiceName}.service.${Date.now()}`);
+        const remoteServiceTmp = `/tmp/${partyServiceName}.service.${Date.now()}`;
+        await fsP.writeFile(localServiceTmp, serviceConfig, 'utf-8');
+        try {
+          await this.ssh.transferFile(localServiceTmp, remoteServiceTmp);
+        } finally {
+          await fsP.unlink(localServiceTmp).catch(() => {});
+        }
+        await this.execSudo(`mv ${remoteServiceTmp} ${servicePath}`);
+      } else {
+        const fsP = await import('node:fs/promises');
+        const tmpService = `/tmp/${partyServiceName}.service.${Date.now()}`;
+        await fsP.writeFile(tmpService, serviceConfig, 'utf-8');
+        await execAsync(`sudo mv ${tmpService} ${servicePath}`);
+      }
+
+      await this.execSudo('systemctl daemon-reload');
+      await this.execSudo(`systemctl enable ${partyServiceName}`);
+      reportProgress('create_service', 'Systemd service created', 75);
+
+      // Step 8: Configure Nginx for party-server (add to existing domain config)
+      reportProgress('setup_nginx', 'Configuring Nginx for party-server...', 80);
+      await this.setupPartyNginx(domain, partyPort, partyServiceName);
+      reportProgress('setup_nginx', 'Nginx configured', 88);
+
+      // Step 9: Start (or restart) service.
+      // Kill any orphan process holding the party port first (can happen after failed previous installs).
+      reportProgress('start_service', 'Starting party-server...', 90);
+      await this.execSudo(`fuser -k ${partyPort}/tcp 2>/dev/null || true`);
+      await new Promise(resolve => setTimeout(resolve, 500));
+      const startResult = await this.execSudo(`systemctl restart ${partyServiceName}`);
+      if (startResult.code !== 0) {
+        logger.warn('Party server systemctl restart returned non-zero', { stderr: startResult.stderr });
+      }
+
+      // Wait for the process to initialise, then verify it is running
+      await new Promise(resolve => setTimeout(resolve, 4000));
+      const statusResult = await this.execCommand(`systemctl is-active ${partyServiceName}`);
+      const isActive = statusResult.stdout.trim() === 'active';
+
+      if (!isActive) {
+        const logs = await this.execCommand(`journalctl -u ${partyServiceName} --no-pager -n 30`);
+        const errDetail = `Status: ${statusResult.stdout.trim()}. Last logs:\n${logs.stdout.slice(-1000)}`;
+        logger.error('Party server failed to start', { errDetail });
+        return { success: false, error: `Party server service is not running after deployment. ${errDetail}` };
+      }
+
+      // Verify the party server is actually accepting requests on its port
+      const portCheck = await this.execCommand(
+        `curl -sf --max-time 5 http://localhost:${partyPort}/ 2>/dev/null && echo "REACHABLE" || echo "UNREACHABLE"`
+      );
+      if (!portCheck.stdout.includes('REACHABLE')) {
+        logger.warn('Party server port not reachable after start', { port: partyPort });
+        // Non-fatal: service might just be slow to bind; continue and let the user retry
+      }
+
+      reportProgress('complete', 'Party server deployed successfully!', 100);
+      progressCb?.({
+        step: 'complete' as InstallationStep,
+        status: StepStatus.COMPLETED,
+        message: 'Party server deployed successfully!',
+        progress: 100,
+        timestamp: new Date(),
+      });
+
+      const partyUrl = `https://${domain}/party`;
+      logger.info('Party server deployed', { partyUrl, port: partyPort, isActive });
+      return { success: true, partyUrl };
+    } catch (error) {
+      const errorMsg = (error as Error).message;
+      logger.error('Party server deployment failed', { error: errorMsg });
+      progressCb?.({
+        step: 'complete' as InstallationStep,
+        status: StepStatus.FAILED,
+        message: `Deployment failed: ${errorMsg}`,
+        progress: 0,
+        error: error as Error,
+        timestamp: new Date(),
+      });
+      return { success: false, error: errorMsg };
+    }
+  }
+
+  /**
+   * Get the status of the party-server service (if deployed)
+   */
+  public async getPartyServerStatus(): Promise<{ installed: boolean; active: boolean; port?: number }> {
+    try {
+      if (this.options.config.installation.type === 'remote' && !this.ssh) {
+        await this.connectToRemote();
+      }
+
+      const serviceName = 'stremio-party-server';
+      const serviceCheck = await this.execCommand(`systemctl is-active ${serviceName} 2>/dev/null`);
+      const active = serviceCheck.stdout.trim() === 'active';
+
+      const fileCheck = await this.execCommand(`test -f /etc/systemd/system/${serviceName}.service && echo "YES" || echo "NO"`);
+      const installed = fileCheck.stdout.trim() === 'YES';
+
+      let port: number | undefined;
+      if (installed) {
+        const envResult = await this.execCommand(`grep 'Environment=PORT=' /etc/systemd/system/${serviceName}.service 2>/dev/null`);
+        const match = envResult.stdout.match(/PORT=(\d+)/);
+        if (match) port = parseInt(match[1], 10);
+      }
+
+      return { installed, active, port };
+    } catch {
+      return { installed: false, active: false };
+    }
+  }
+
+  /**
+   * Completely remove the party server: stop + disable service, delete files, remove nginx config.
+   */
+  public async uninstallPartyServer(): Promise<{ success: boolean; error?: string }> {
+    const partyServiceName = 'stremio-party-server';
+    const partyInstallDir = '/opt/stremio-party-server';
+    const nginxConfPath = '/etc/nginx/sites-available/stremio-party-server';
+    const nginxEnabledPath = '/etc/nginx/sites-enabled/stremio-party-server';
+    const serviceFilePath = `/etc/systemd/system/${partyServiceName}.service`;
+
+    try {
+      if (this.options.config.installation.type === 'remote' && !this.ssh) {
+        await this.connectToRemote();
+      }
+
+      // Stop and disable the service (ignore errors if not installed)
+      await this.execSudo(`systemctl stop ${partyServiceName}`).catch(() => {});
+      await this.execSudo(`systemctl disable ${partyServiceName}`).catch(() => {});
+
+      // Remove service file and reload systemd
+      await this.execSudo(`rm -f ${serviceFilePath}`).catch(() => {});
+      await this.execSudo('systemctl daemon-reload').catch(() => {});
+
+      // Remove party location blocks from addon nginx config + clean up old separate file
+      await this.removePartyNginxLocations().catch(() => {});
+      await this.execSudo(`rm -f ${nginxEnabledPath}`).catch(() => {});
+      await this.execSudo(`rm -f ${nginxConfPath}`).catch(() => {});
+
+      // Remove install directory
+      await this.execSudo(`rm -rf ${partyInstallDir}`).catch(() => {});
+
+      logger.info('Party server uninstalled successfully');
+      return { success: true };
+    } catch (error) {
+      const msg = (error as Error).message;
+      logger.error('Party server uninstall failed', { error: msg });
+      return { success: false, error: msg };
+    }
+  }
+
+  /**
+   * Clean reinstall of the addon server binary only.
+   * Preserves all config and environment — only replaces the addon-server files.
+   * Steps: stop service → delete old addon-server dir → copy bundled → npm install → restart service.
+   */
+  public async reinstallAddonServer(
+    progressCallback?: (progress: InstallationProgress) => void
+  ): Promise<{ success: boolean; error?: string }> {
+    const config = this.options.config;
+    // The addon-server files live directly inside addonDirectory (not in a subdirectory).
+    // Initial install copies the bundled package to addonDirectory, npm installs there,
+    // and the service ExecStart points to addonDirectory/server.js.
+    const addonDirectory = config.paths.addonDirectory;
+    const serviceName = config.serviceName || 'stremio-addon';
+
+    const report = (step: string, message: string, progress: number) => {
+      progressCallback?.({
+        step: step as InstallationStep,
+        status: StepStatus.IN_PROGRESS,
+        message,
+        progress,
+        timestamp: new Date(),
+      });
+    };
+
+    try {
+      if (config.installation.type === 'remote' && !this.ssh) {
+        report('connect', 'Connecting to remote server...', 5);
+        await this.connectToRemote();
+      }
+      report('connect', 'Connected', 10);
+
+      // Step 1: Stop the service
+      report('create_service', 'Stopping addon service...', 15);
+      await this.execSudo(`systemctl stop ${serviceName}`).catch(() => {});
+      report('create_service', 'Service stopped', 20);
+
+      // Step 2: Copy fresh bundled addon-server.
+      // copyBundledAddonServer internally removes the existing addonDirectory and copies
+      // all bundled files (dist/, bin/server.js, package.json, landing.html) into it,
+      // then creates the root-level server.js shim.
+      report('clone_repository', 'Copying new addon-server files...', 30);
+      const bundledPath = await this.getBundledAddonServerPath();
+      if (!bundledPath) {
+        return { success: false, error: 'Bundled addon-server not found. Run npm run build first.' };
+      }
+      await this.copyBundledAddonServer(bundledPath, addonDirectory);
+      report('clone_repository', 'New files copied', 60);
+
+      // Step 3: Install npm dependencies in addonDirectory (same as initial install)
+      report('install_dependencies', 'Installing dependencies...', 65);
+      const npmResult = await this.execCommand(`cd ${addonDirectory} && npm install --production`);
+      if (npmResult.code !== 0) {
+        return { success: false, error: `npm install failed: ${npmResult.stderr}` };
+      }
+      report('install_dependencies', 'Dependencies installed', 75);
+
+      // Step 4: Regenerate the nginx *config file* to pick up new location blocks,
+      // timeout changes, etc.  This does NOT issue or renew SSL certificates — it
+      // only rewrites the text config and reuses the existing cert on disk.
+      report('setup_nginx' as InstallationStep, 'Updating nginx configuration...', 78);
+      try {
+        await this.setupNginx();
+        report('setup_nginx' as InstallationStep, 'Nginx updated', 83);
+      } catch (nginxErr) {
+        logger.warn('Nginx update failed during reinstall — streaming may use stale timeouts', {
+          error: (nginxErr as Error).message,
+        });
+        report('setup_nginx' as InstallationStep, 'Nginx update skipped (non-fatal)', 83);
+      }
+
+      // Step 5: Regenerate the systemd service file so env-var changes
+      // (port, LOCAL_LIBRARY_DATA_DIR, tokens, etc.) are picked up.
+      report('create_service' as InstallationStep, 'Updating service file...', 85);
+      try {
+        await this.updateServiceFile({ restartService: false });
+        report('create_service' as InstallationStep, 'Service file updated', 88);
+      } catch (svcErr) {
+        logger.warn('Service file update failed during reinstall — using existing service file', {
+          error: (svcErr as Error).message,
+        });
+      }
+
+      // Step 6: Restart the service
+      report('start_service', 'Starting addon service...', 90);
+      await this.execSudo(`systemctl restart ${serviceName}`);
+      report('start_service', 'Service restarted', 95);
+
+      // Brief wait then verify
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      const statusResult = await this.execCommand(`systemctl is-active ${serviceName}`);
+      const isActive = statusResult.stdout.trim() === 'active';
+
+      if (!isActive) {
+        const logs = await this.execCommand(`journalctl -u ${serviceName} --no-pager -n 20`);
+        logger.warn('Service may not be running after reinstall', { logs: logs.stdout });
+        return { success: false, error: `Service failed to start after reinstall. Check logs: ${logs.stdout.slice(-500)}` };
+      }
+
+      progressCallback?.({
+        step: 'complete' as InstallationStep,
+        status: StepStatus.COMPLETED,
+        message: 'Addon reinstalled successfully!',
+        progress: 100,
+        timestamp: new Date(),
+      });
+
+      logger.info('Addon server reinstalled successfully', { serviceName, addonDirectory });
+      return { success: true };
+    } catch (error) {
+      const msg = (error as Error).message;
+      logger.error('Addon server reinstall failed', { error: msg });
+      progressCallback?.({
+        step: 'complete' as InstallationStep,
+        status: StepStatus.FAILED,
+        message: `Reinstall failed: ${msg}`,
+        progress: 0,
+        error: error as Error,
+        timestamp: new Date(),
+      });
+      return { success: false, error: msg };
+    }
+  }
+
+  /**
+   * Get path to bundled party-server (mirrors getBundledAddonServerPath pattern)
+   */
+  private async getBundledPartyServerPath(): Promise<string | null> {
+    return this.getBundledPackagePath('party-server');
+  }
+
+  /**
+   * Generic method to locate a bundled package by name.
+   * Checks paths in priority order: Electron resources -> CLI resources -> Monorepo
+   */
+  private async getBundledPackagePath(packageName: string): Promise<string | null> {
+    const corePackageDir = __dirname;
+    const coreDistDir = path.dirname(corePackageDir);
+    const coreRootDir = path.dirname(coreDistDir);
+    const packagesDir = path.dirname(coreRootDir);
+
+    const pathChecks: Array<{ path: string; description: string }> = [];
+
+    // 1. Electron packaged (from env)
+    if (process.env.ELECTRON_RESOURCES_PATH) {
+      pathChecks.push({ path: path.join(process.env.ELECTRON_RESOURCES_PATH, 'cli', 'resources', packageName), description: `Electron packaged (env) ${packageName}` });
+    }
+    // 2. Electron packaged (process.resourcesPath)
+    if (typeof (process as any).resourcesPath !== 'undefined') {
+      pathChecks.push({ path: path.join((process as any).resourcesPath, 'cli', 'resources', packageName), description: `Electron packaged ${packageName}` });
+    }
+    // 3. Electron dev (from env)
+    if (process.env.ELECTRON_APP_PATH) {
+      pathChecks.push({ path: path.join(process.env.ELECTRON_APP_PATH, 'resources', 'cli', 'resources', packageName), description: `Electron dev (env) ${packageName}` });
+    }
+    // 4. CLI packaged (from core)
+    pathChecks.push({ path: path.join(coreRootDir, '..', packageName), description: `CLI packaged (from core) ${packageName}` });
+    // 5. CLI packaged (from cwd)
+    pathChecks.push({ path: path.join(process.cwd(), 'resources', packageName), description: `CLI packaged (cwd) ${packageName}` });
+    // 6. Monorepo (from core)
+    pathChecks.push({ path: path.join(packagesDir, packageName), description: `Monorepo (from core) ${packageName}` });
+    // 7. Monorepo (from cwd)
+    pathChecks.push({ path: path.join(process.cwd(), 'packages', packageName), description: `Monorepo (cwd) ${packageName}` });
+    // 8. Electron monorepo
+    pathChecks.push({ path: path.join(packagesDir, 'electron', 'resources', 'cli', 'resources', packageName), description: `Electron monorepo ${packageName}` });
+
+    logger.debug(`Looking for bundled ${packageName}`, { totalPaths: pathChecks.length });
+
+    for (const check of pathChecks) {
+      try {
+        const packageJsonPath = path.join(check.path, 'package.json');
+        const distPath = path.join(check.path, 'dist');
+        const packageExists = await this.checkPathExists(packageJsonPath, true);
+        const distExists = await this.checkPathExists(distPath, true);
+        if (packageExists && distExists) {
+          logger.info(`Found bundled ${packageName}`, { path: check.path, description: check.description });
+          return check.path;
+        }
+      } catch {
+        // Continue
+      }
+    }
+
+    logger.warn(`Bundled ${packageName} not found in any expected location`);
+    return null;
+  }
+
+  /**
+   * Generic copy of a bundled package to a target directory (mirrors copyBundledAddonServer pattern)
+   */
+  private async copyBundledPackage(sourcePath: string, targetDir: string, packageLabel: string): Promise<void> {
+    const whoamiResult = await this.execCommand('whoami');
+    const username = whoamiResult.stdout.trim() || whoamiResult.stderr.trim() || 'root';
+
+    // Remove existing directory
+    const dirExists = await this.execCommand(`test -d ${targetDir}`);
+    if (dirExists.code === 0) {
+      logger.info(`Removing existing ${packageLabel} directory`, { targetDir });
+      await this.execSudo(`rm -rf ${targetDir}`);
+    }
+
+    if (this.ssh) {
+      const tempTargetDir = `/tmp/stremio-${packageLabel}-install.${Date.now()}`;
+      logger.info(`Copying bundled ${packageLabel} via SSH`, { sourcePath, tempTargetDir });
+
+      const fsModule = await import('fs');
+      if (!fsModule.existsSync(sourcePath)) {
+        throw new Error(`Source directory does not exist: ${sourcePath}`);
+      }
+
+      await this.execCommand(`mkdir -p ${tempTargetDir}`);
+
+      const sshInstance = (this.ssh as any).ssh;
+      if (sshInstance && typeof sshInstance.putDirectory === 'function') {
+        let filesTransferred = 0;
+        await sshInstance.putDirectory(sourcePath, tempTargetDir, {
+          recursive: true,
+          concurrency: 5,
+          validate: (itemPath: string) => {
+            const relativePath = path.relative(sourcePath, itemPath);
+            return !relativePath.includes('node_modules');
+          },
+          tick: (_localPath: string, _remotePath: string, error?: Error) => {
+            if (!error) filesTransferred++;
+          },
+        });
+        logger.info(`putDirectory completed for ${packageLabel}`, { filesTransferred });
+
+        const fileCountResult = await this.execCommand(`find ${tempTargetDir} -type f | wc -l`);
+        if ((parseInt(fileCountResult.stdout.trim()) || 0) === 0) {
+          throw new Error(`Temp directory is empty after copy for ${packageLabel}`);
+        }
+
+        await this.execSudo(`rm -rf ${targetDir}`);
+        const moveResult = await this.execSudo(`mv ${tempTargetDir} ${targetDir}`);
+        if (moveResult.code !== 0) {
+          await this.execSudo(`mkdir -p ${targetDir}`);
+          await this.execSudo(`cp -r ${tempTargetDir}/. ${targetDir}/ && rm -rf ${tempTargetDir}`);
+        }
+      } else {
+        await (this.ssh as any).transferDirectory(sourcePath, tempTargetDir);
+        await this.execSudo(`rm -rf ${targetDir}`);
+        await this.execSudo(`mv ${tempTargetDir} ${targetDir}`);
+      }
+    } else {
+      const fsModule = await import('fs');
+      fsModule.mkdirSync(targetDir, { recursive: true });
+      const copyRecursive = (src: string, dest: string) => {
+        const entries = fsModule.readdirSync(src, { withFileTypes: true });
+        fsModule.mkdirSync(dest, { recursive: true });
+        for (const entry of entries) {
+          if (entry.name === 'node_modules') continue;
+          const srcPath = path.join(src, entry.name);
+          const destPath = path.join(dest, entry.name);
+          if (entry.isDirectory()) {
+            copyRecursive(srcPath, destPath);
+          } else {
+            fsModule.copyFileSync(srcPath, destPath);
+          }
+        }
+      };
+      copyRecursive(sourcePath, targetDir);
+    }
+
+    // Fix ownership
+    await this.execSudo(`chown -R ${username}:${username} ${targetDir}`).catch(() => {});
+    await this.execSudo(`chmod -R u+rwX,go+rX ${targetDir}`).catch(() => {});
+
+    logger.info(`Bundled ${packageLabel} copied successfully`, { targetDir });
+  }
+
+  /**
+   * Patch the existing addon nginx config to add or remove /party location blocks.
+   *
+   * Uses a read-modify-write approach: reads the live config (which may be certbot-managed,
+   * hand-edited, or in any format), modifies only the party blocks in JavaScript, and
+   * writes back via SFTP. This preserves all certbot-managed lines, ssl_dhparam includes,
+   * custom directives, etc. — we never touch anything outside the party blocks.
+   *
+   * Safety guarantees:
+   *  1. The existing config is read and only the party blocks are changed.
+   *  2. The modified config is transferred via SFTP — no shell escaping of nginx vars.
+   *  3. A named backup (.pre-party-bak) is taken before swapping.
+   *  4. `nginx -t` failure → backup auto-restored, nginx reloaded with original.
+   *  5. Post-reload health check → if nginx goes down, backup restored and restarted.
+   */
+  private async writeAddonNginxConfig(
+    _domain: string,
+    _addonPort: number,
+    partyPort: number | null,   // null = remove party blocks
+  ): Promise<void> {
+    const addonNginxConf = this.options.config.paths.nginxConfig;
+    const serviceName = this.getServiceName();
+
+    if (!addonNginxConf) {
+      throw new Error('Addon nginx config path is not set — re-install the addon first.');
+    }
+
+    // ------------------------------------------------------------------
+    // Step 1: Read the existing working config.
+    // ------------------------------------------------------------------
+    const confExists = await this.execCommand(`test -f "${addonNginxConf}" && echo "EXISTS" || echo "MISSING"`);
+    if (!confExists.stdout.includes('EXISTS')) {
+      throw new Error(`Addon nginx config not found at ${addonNginxConf} — install the addon first.`);
+    }
+
+    const readResult = await this.execCommand(`cat "${addonNginxConf}"`);
+    if (readResult.code !== 0 || !readResult.stdout.trim()) {
+      throw new Error(`Could not read addon nginx config at ${addonNginxConf}: ${readResult.stderr}`);
+    }
+
+    // ------------------------------------------------------------------
+    // Step 2: In JavaScript, remove any old party blocks and optionally
+    // insert new ones. No shell involved — no escaping issues.
+    // ------------------------------------------------------------------
+    // Strip previous party blocks (between our markers, idempotent)
+    let config = readResult.stdout.replace(
+      /[ \t]*# BEGIN_PARTY_BLOCKS[\s\S]*?# END_PARTY_BLOCKS[ \t]*\n?/g,
+      ''
+    );
+
+    if (partyPort !== null) {
+      const partyBlockStr = [
+        '    # BEGIN_PARTY_BLOCKS',
+        '    # Party server - exact match (GET /party)',
+        `    location = /party {`,
+        `        proxy_pass http://localhost:${partyPort}/;`,
+        `        proxy_http_version 1.1;`,
+        `        proxy_set_header Host $host;`,
+        `        proxy_set_header X-Real-IP $remote_addr;`,
+        `        proxy_set_header X-Forwarded-Proto $scheme;`,
+        `    }`,
+        ``,
+        `    # Party server - video proxy (streaming, buffering disabled to prevent stalls)`,
+        `    # Must be listed BEFORE /party/ so the longer prefix wins.`,
+        `    location /party/api/proxy {`,
+        `        proxy_pass http://localhost:${partyPort}/api/proxy;`,
+        `        proxy_http_version 1.1;`,
+        `        proxy_set_header Host $host;`,
+        `        proxy_set_header X-Real-IP $remote_addr;`,
+        `        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`,
+        `        proxy_set_header X-Forwarded-Proto $scheme;`,
+        `        proxy_buffering off;`,
+        `        proxy_read_timeout 3600s;`,
+        `        proxy_send_timeout 3600s;`,
+        `        proxy_connect_timeout 75s;`,
+        `        # Ensure CORS headers are present even on Nginx-generated 502/504 errors.`,
+        `        # proxy_hide_header strips the upstream copy so we never send a duplicate.`,
+        `        proxy_hide_header Access-Control-Allow-Origin;`,
+        `        add_header Access-Control-Allow-Origin * always;`,
+        `        add_header Access-Control-Expose-Headers "Content-Length, Content-Range, Accept-Ranges" always;`,
+        `    }`,
+        ``,
+        `    # Party server - subtitle proxy (SRT→VTT conversion, CORS added)`,
+        `    # Must be listed BEFORE /party/ so the longer prefix wins.`,
+        `    location /party/api/subtitle {`,
+        `        proxy_pass http://localhost:${partyPort}/api/subtitle;`,
+        `        proxy_http_version 1.1;`,
+        `        proxy_set_header Host $host;`,
+        `        proxy_set_header X-Real-IP $remote_addr;`,
+        `        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`,
+        `        proxy_set_header X-Forwarded-Proto $scheme;`,
+        `        proxy_read_timeout 30s;`,
+        `        proxy_connect_timeout 15s;`,
+        `        proxy_hide_header Access-Control-Allow-Origin;`,
+        `        add_header Access-Control-Allow-Origin * always;`,
+        `    }`,
+        ``,
+        `    # Party server - API and static routes (/party/*)`,
+        `    location /party/ {`,
+        `        proxy_pass http://localhost:${partyPort}/;`,
+        `        proxy_http_version 1.1;`,
+        `        proxy_set_header Host $host;`,
+        `        proxy_set_header X-Real-IP $remote_addr;`,
+        `        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`,
+        `        proxy_set_header X-Forwarded-Proto $scheme;`,
+        `        proxy_read_timeout 300s;`,
+        `        proxy_send_timeout 300s;`,
+        `        proxy_connect_timeout 75s;`,
+        `    }`,
+        ``,
+        `    # Party server - WebSocket upgrade (/party/ws/:sessionId)`,
+        `    location /party/ws/ {`,
+        `        proxy_pass http://localhost:${partyPort}/ws/;`,
+        `        proxy_http_version 1.1;`,
+        `        proxy_set_header Upgrade $http_upgrade;`,
+        `        proxy_set_header Connection "upgrade";`,
+        `        proxy_set_header Host $host;`,
+        `        proxy_set_header X-Real-IP $remote_addr;`,
+        `        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`,
+        `        proxy_set_header X-Forwarded-Proto $scheme;`,
+        `        proxy_buffering off;`,
+        `        proxy_read_timeout 86400s;`,
+        `        proxy_send_timeout 86400s;`,
+        `    }`,
+        `    # END_PARTY_BLOCKS`,
+        '',
+      ].join('\n');
+
+      // Insert just before the first "listen 443" line (certbot places it near bottom of server block).
+      // Fallback: before the last closing "}" in the file.
+      // nginx picks longest-prefix / exact-match regardless of order, so placement is flexible.
+      const listenSslMatch = config.match(/(\n[ \t]*listen 443)/);
+      if (listenSslMatch?.index !== undefined) {
+        config =
+          config.slice(0, listenSslMatch.index) +
+          '\n' + partyBlockStr +
+          config.slice(listenSslMatch.index);
+      } else {
+        const lastBrace = config.lastIndexOf('\n}');
+        if (lastBrace !== -1) {
+          config = config.slice(0, lastBrace) + '\n' + partyBlockStr + config.slice(lastBrace);
+        } else {
+          config = config + '\n' + partyBlockStr;
+        }
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // Step 3: Transfer modified config to the server via SFTP.
+    // ------------------------------------------------------------------
+    const fsP = await import('node:fs/promises');
+    const osModule = await import('node:os');
+    const timestamp = Date.now();
+    const remoteTemp = `/tmp/stremio-nginx-${timestamp}.conf`;
+
+    if (this.ssh) {
+      const localTemp = path.join(osModule.tmpdir(), `stremio-nginx-${timestamp}.conf`);
+      await fsP.writeFile(localTemp, config, 'utf-8');
+      try {
+        await this.ssh.transferFile(localTemp, remoteTemp);
+      } finally {
+        await fsP.unlink(localTemp).catch(() => {});
+      }
+    } else {
+      await fsP.writeFile(remoteTemp, config, 'utf-8');
+    }
+
+    const sizeCheck = await this.execCommand(`test -s "${remoteTemp}" && echo "OK" || echo "EMPTY"`);
+    if (!sizeCheck.stdout.includes('OK')) {
+      throw new Error('Nginx config upload produced an empty file — aborting to protect existing config.');
+    }
+
+    if (partyPort !== null) {
+      const blockCheck = await this.execCommand(`grep -c 'location = /party' "${remoteTemp}" 2>/dev/null || echo "0"`);
+      if ((parseInt(blockCheck.stdout.trim()) || 0) === 0) {
+        await this.execCommand(`rm -f "${remoteTemp}"`).catch(() => {});
+        throw new Error('Party location block is missing from the modified nginx config.');
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // Step 4: Backup → swap → test → rollback-if-failed.
+    // ------------------------------------------------------------------
+    const backupPath = `${addonNginxConf}.pre-party-bak`;
+    await this.execSudo(`cp "${addonNginxConf}" "${backupPath}"`);
+
+    const mvResult = await this.execSudo(`mv "${remoteTemp}" "${addonNginxConf}"`);
+    if (mvResult.code !== 0) {
+      await this.execCommand(`rm -f "${remoteTemp}"`).catch(() => {});
+      throw new Error(`Failed to move nginx config into place: ${mvResult.stderr}`);
+    }
+
+    // Ensure the symlink in sites-enabled is intact
+    await this.execSudo(`ln -sf "${addonNginxConf}" /etc/nginx/sites-enabled/${serviceName}`);
+
+    // Remove any old separate party-server config that would conflict
+    await this.execSudo(`rm -f /etc/nginx/sites-enabled/stremio-party-server /etc/nginx/sites-available/stremio-party-server`).catch(() => {});
+
+    const testResult = await this.execSudo('nginx -t');
+    if (testResult.code !== 0) {
+      logger.error('nginx -t failed — restoring backup', { stderr: testResult.stderr });
+      await this.execSudo(`cp "${backupPath}" "${addonNginxConf}"`);
+      await this.execSudo('systemctl reload nginx').catch(() => {});
+      throw new Error(`nginx -t failed — original config restored.\nError: ${testResult.stderr}`);
+    }
+
+    await this.execSudo('systemctl reload nginx');
+
+    // ------------------------------------------------------------------
+    // Step 5: Post-reload health check.
+    // ------------------------------------------------------------------
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    const nginxHealth = await this.execCommand('systemctl is-active nginx 2>&1');
+    if (nginxHealth.stdout.trim() !== 'active') {
+      logger.error('Nginx not active after reload — restoring backup and restarting');
+      await this.execSudo(`cp "${backupPath}" "${addonNginxConf}"`);
+      await this.execSudo('systemctl restart nginx').catch(() => {});
+      throw new Error('Nginx became inactive after reload — original config restored and nginx restarted.');
+    }
+
+    logger.info('Addon nginx config patched with party blocks', { addonNginxConf, partyPort });
+  }
+
+  /**
+   * Configure nginx with party server blocks. Regenerates the full addon nginx config
+   * with /party location blocks baked in.
+   */
+  private async setupPartyNginx(domain: string, partyPort: number, _partyServiceName: string): Promise<void> {
+    const addonPort = this.options.config.addon.port || 7000;
+    await this.writeAddonNginxConfig(domain, addonPort, partyPort);
+    logger.info('Party-server nginx locations written into addon config', { domain, partyPort });
+  }
+
+  /**
+   * Remove /party location blocks from the addon nginx config (called during uninstall).
+   * Regenerates the full addon nginx config without party blocks.
+   */
+  public async removePartyNginxLocations(): Promise<void> {
+    const domain = this.options.config.addon.domain;
+    const addonPort = this.options.config.addon.port || 7000;
+    if (!domain) return;
+    await this.writeAddonNginxConfig(domain, addonPort, null).catch((err: Error) => {
+      logger.warn('Could not remove party nginx blocks during uninstall', { error: err.message });
+    });
+  }
+
+  /**
+   * Diagnose party server state: nginx config contents, service status, and port reachability.
+   * Returns raw diagnostic strings for display in the UI.
+   */
+  public async diagnosePartyServer(): Promise<{
+    nginxConfigPath: string;
+    nginxHasPartyBlocks: boolean;
+    nginxConfigSnippet: string;
+    serviceStatus: string;
+    serviceLogs: string;
+    portReachable: boolean;
+    servicePortEnv: string;
+  }> {
+    if (this.options.config.installation.type === 'remote' && !this.ssh) {
+      await this.connectToRemote();
+    }
+    const nginxConfPath = this.options.config.paths.nginxConfig || '(not set in config)';
+    const partyServiceName = 'stremio-party-server';
+    const partyPort = 7777;
+
+    const nginxRead = await this.execCommand(`cat "${nginxConfPath}" 2>&1`).catch(() => ({ stdout: '(error reading file)', code: 1, stderr: '' }));
+    const nginxContent = nginxRead.stdout || '';
+    const nginxHasPartyBlocks = nginxContent.includes('location = /party') || nginxContent.includes('location /party/');
+    const nginxConfigSnippet = nginxContent.slice(0, 12000); // show up to 12KB (enough for full SSL config)
+
+    const statusResult = await this.execCommand(`systemctl is-active ${partyServiceName} 2>&1`).catch(() => ({ stdout: 'unknown', code: 1, stderr: '' }));
+    const logsResult = await this.execCommand(`journalctl -u ${partyServiceName} --no-pager -n 20 2>&1`).catch(() => ({ stdout: '(no logs)', code: 0, stderr: '' }));
+
+    const portCheckResult = await this.execCommand(
+      `curl -sf --max-time 3 http://localhost:${partyPort}/ 2>/dev/null && echo "REACHABLE" || echo "UNREACHABLE"`
+    ).catch(() => ({ stdout: 'UNREACHABLE', code: 1, stderr: '' }));
+
+    // Also check what port the service env actually sets (useful for spotting PORT vs PARTY_PORT mismatch)
+    const serviceEnvResult = await this.execCommand(
+      `grep -E 'Environment=(PORT|PARTY_PORT)' /etc/systemd/system/${partyServiceName}.service 2>/dev/null || echo "(not found)"`
+    ).catch(() => ({ stdout: '(error)', code: 1, stderr: '' }));
+
+    return {
+      nginxConfigPath: nginxConfPath,
+      nginxHasPartyBlocks,
+      nginxConfigSnippet,
+      serviceStatus: statusResult.stdout.trim(),
+      serviceLogs: logsResult.stdout.slice(-2000),
+      portReachable: portCheckResult.stdout.includes('REACHABLE'),
+      servicePortEnv: serviceEnvResult.stdout.trim(),
+    };
   }
 
   /**

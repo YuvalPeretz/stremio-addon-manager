@@ -13,6 +13,7 @@ import {
   FiFileText,
   FiServer,
   FiGrid,
+  FiPackage,
 } from 'react-icons/fi';
 import AddonSelector from '../AddonSelector/AddonSelector';
 import styles from './Layout.module.scss';
@@ -56,6 +57,11 @@ function Layout() {
       label: 'Configuration',
     },
     {
+      key: '/updates',
+      icon: <FiPackage size={18} />,
+      label: 'Updates',
+    },
+    {
       key: '/logs',
       icon: <FiFileText size={18} />,
       label: 'Logs',
@@ -80,7 +86,9 @@ function Layout() {
         <Sider width={240} className={styles.sider}>
           <Menu
             mode="inline"
-            selectedKeys={[location.pathname]}
+            selectedKeys={
+              location.pathname.startsWith("/local-library/") ? [] : [location.pathname]
+            }
             items={menuItems}
             onClick={handleMenuClick}
             theme="dark"

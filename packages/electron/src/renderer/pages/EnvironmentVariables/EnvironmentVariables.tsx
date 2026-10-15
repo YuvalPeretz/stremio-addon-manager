@@ -5,9 +5,11 @@
 
 import { useState, useEffect } from "react";
 import { useAtom } from "jotai";
-import { Flex, Typography, Button, Table, Input, Space, message, Modal, Tag, Tooltip, Popconfirm } from "antd";
+import { Alert, Flex, Typography, Button, Table, Input, Space, message, Modal, Tag, Tooltip, Popconfirm } from "antd";
 import { FiRefreshCw, FiEdit, FiRotateCw, FiSave, FiShuffle } from "react-icons/fi";
 import { selectedAddonIdAtom } from "../../atoms/addonAtoms";
+import { isCustomScriptInstall } from "../../utils/addonUrls";
+import type { AddonManagerConfig } from "@stremio-addon-manager/core";
 import styles from "./EnvironmentVariables.module.scss";
 
 const { Title, Text } = Typography;
@@ -58,62 +60,150 @@ function EnvironmentVariables() {
 
   async function loadConfig() {
     try {
+      console.log("[EnvVars] Loading config for addon:", selectedAddonId || "(default)");
       const result = await window.electron.config.load(selectedAddonId || undefined);
       if (result.success) {
+        console.log("[EnvVars] Config loaded successfully:", {
+          hasTarget: !!result.data?.installation?.target,
+          targetHost: result.data?.installation?.target?.host,
+          serviceName: result.data?.serviceName,
+        });
         setConfig(result.data);
+      } else {
+        console.error("[EnvVars] Config load failed:", result.error);
       }
     } catch (error) {
-      console.error("Failed to load config", error);
+      console.error("[EnvVars] Failed to load config", error);
     }
   }
 
   async function loadMetadata() {
     try {
-      const result = await window.electron.env.getMetadata();
+      console.log("[EnvVars] Loading metadata...");
+      const result = await window.electron.env.getMetadata(selectedAddonId || undefined);
       if (result.success && result.data) {
+        console.log("[EnvVars] Metadata loaded:", {
+          metadataKeys: Object.keys(result.data.metadata || {}).length,
+          defaultKeys: Object.keys(result.data.defaults || {}).length,
+        });
         setMetadata(result.data.metadata as Record<string, EnvVarMetadata>);
         setDefaults(result.data.defaults);
+      } else {
+        console.error("[EnvVars] Metadata load failed:", result.error);
       }
     } catch (error) {
-      console.error("Failed to load metadata", error);
+      console.error("[EnvVars] Failed to load metadata", error);
     }
   }
 
   // Get SSH config from addon config if available
   function getSSHConfig(): any {
     if (!config) {
+      console.log("[EnvVars] No config loaded, cannot construct SSH config");
       return undefined;
     }
     const target = config?.installation?.target;
-    if (target && (target.host || target.privateKeyPath)) {
-      // Construct SSH config from target config
-      return {
-        host: target.host,
-        port: target.port || 22,
-        username: target.username,
-        password: target.password,
-        privateKeyPath: target.privateKeyPath,
-      };
+    if (!target) {
+      console.log("[EnvVars] Config has no installation.target");
+      return undefined;
     }
-    return undefined;
+    if (!target.host && !target.privateKeyPath) {
+      console.log("[EnvVars] Target has no host or privateKeyPath, assuming local");
+      return undefined;
+    }
+    
+    // Validate required fields
+    if (!target.host) {
+      console.warn("[EnvVars] SSH target missing host");
+      return undefined;
+    }
+    if (!target.username) {
+      console.warn("[EnvVars] SSH target missing username");
+      return undefined;
+    }
+    if (!target.password && !target.privateKeyPath) {
+      console.warn("[EnvVars] SSH target missing both password and privateKeyPath");
+      return undefined;
+    }
+    
+    const sshConfig = {
+      host: target.host,
+      port: target.port || 22,
+      username: target.username,
+      password: target.password,
+      privateKeyPath: target.privateKeyPath,
+    };
+    
+    console.log("[EnvVars] Constructed SSH config:", {
+      host: sshConfig.host,
+      port: sshConfig.port,
+      username: sshConfig.username,
+      hasPassword: !!sshConfig.password,
+      hasPrivateKey: !!sshConfig.privateKeyPath,
+    });
+    
+    return sshConfig;
   }
 
   async function loadEnvironmentVariables() {
     setLoading(true);
     try {
-      // Ensure config is loaded before getting SSH config
-      if (!config && selectedAddonId) {
-        await loadConfig();
+      console.log("[EnvVars] Loading environment variables for addon:", selectedAddonId || "(default)");
+      
+      // Ensure config is ALWAYS loaded before getting SSH config
+      let loadedConfig = config;
+      if (!loadedConfig) {
+        console.log("[EnvVars] Config not loaded yet, loading now...");
+        const configResult = await window.electron.config.load(selectedAddonId || undefined);
+        if (configResult.success && configResult.data) {
+          loadedConfig = configResult.data;
+          setConfig(configResult.data);
+        }
       }
+
+      // custom_script: show YAML/config env (no systemd service file)
+      if (loadedConfig && isCustomScriptInstall(loadedConfig as AddonManagerConfig)) {
+        const fromConfig = (loadedConfig as AddonManagerConfig).addon?.environmentVariables || {};
+        const cleaned: Record<string, string> = {};
+        for (const [key, value] of Object.entries(fromConfig)) {
+          if (typeof value === "string") {
+            cleaned[key] = value;
+          }
+        }
+        setEnvVars(cleaned);
+        return;
+      }
+      
       const ssh = getSSHConfig();
+      console.log("[EnvVars] Calling env.list with:", {
+        hasSSH: !!ssh,
+        addonId: selectedAddonId || "(none)",
+      });
+      
       const result = await window.electron.env.list(ssh, selectedAddonId || undefined);
-      if (result.success && result.data) {
-        setEnvVars(result.data);
+      console.log("[EnvVars] env.list result:", {
+        success: result.success,
+        hasData: !!result.data,
+        dataKeys: result.data ? Object.keys(result.data).length : 0,
+        error: result.error,
+      });
+      
+      if (result.success) {
+        if (result.data && Object.keys(result.data).length > 0) {
+          console.log("[EnvVars] Environment variables loaded:", Object.keys(result.data));
+          setEnvVars(result.data);
+        } else {
+          console.warn("[EnvVars] Success but no environment variables returned");
+          setEnvVars({});
+          message.warning("No environment variables found in service file");
+        }
       } else {
+        console.error("[EnvVars] Failed to load environment variables:", result.error);
         message.error(result.error || "Failed to load environment variables");
       }
     } catch (error) {
-      message.error("Failed to load environment variables");
+      console.error("[EnvVars] Exception while loading environment variables:", error);
+      message.error(`Failed to load environment variables: ${(error as Error).message}`);
     } finally {
       setLoading(false);
     }
@@ -514,8 +604,20 @@ function EnvironmentVariables() {
     },
   ];
 
+  const isCustomScript =
+    Boolean(config && isCustomScriptInstall(config as AddonManagerConfig));
+
   return (
     <div className={styles.container}>
+      {isCustomScript && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="Custom script install"
+          description="SSH service-file Sync does not apply here. Save from Configuration to merge into ADDON_ENV and run your deploy script with DEPLOY_MODE=config. Edits on this page alone will not update Gateway stacks."
+        />
+      )}
       <Flex justify="space-between" align="center" style={{ marginBottom: 16 }}>
         <Title level={5} style={{ margin: 0 }}>
           Environment Variables {selectedAddonId && `(${selectedAddonId})`}
@@ -535,7 +637,13 @@ function EnvironmentVariables() {
               Reset All
             </Button>
           </Popconfirm>
-          <Button type="primary" icon={<FiSave />} onClick={() => handleSync(false)}>
+          <Button
+            type="primary"
+            icon={<FiSave />}
+            onClick={() => handleSync(false)}
+            disabled={isCustomScript}
+            title={isCustomScript ? "Use Configuration → Save for custom_script" : undefined}
+          >
             Sync with Config
           </Button>
           <Popconfirm
@@ -543,8 +651,14 @@ function EnvironmentVariables() {
             description="This will sync the service file and restart the service to apply changes."
             onConfirm={() => handleSync(true)}
             okText="Sync & Restart"
+            disabled={isCustomScript}
           >
-            <Button type="primary" icon={<FiSave />}>
+            <Button
+              type="primary"
+              icon={<FiSave />}
+              disabled={isCustomScript}
+              title={isCustomScript ? "Use Configuration → Save for custom_script" : undefined}
+            >
               Sync & Restart
             </Button>
           </Popconfirm>

@@ -5,6 +5,7 @@
 
 import axios from "axios";
 import { logger } from "../utils/logger.js";
+import { joinBaseUrl, normalizeBaseUrl } from "../utils/url.js";
 import type { ServerInfo, AddonManifest, ServerDetectionResult } from "./types.js";
 
 /**
@@ -23,8 +24,8 @@ export class ServerDetector {
     try {
       const startTime = Date.now();
 
-      // Clean up URL
-      const cleanUrl = url.replace(/\/+$/, ""); // Remove trailing slashes
+      // Normalize base (keeps Gateway path prefix; strips trailing slashes)
+      const cleanUrl = normalizeBaseUrl(url);
 
       // Try to get manifest
       const manifest = await this.getManifest(cleanUrl);
@@ -118,8 +119,8 @@ export class ServerDetector {
    */
   public static async getManifest(url: string): Promise<AddonManifest | null> {
     try {
-      const cleanUrl = url.replace(/\/+$/, "");
-      const manifestUrl = `${cleanUrl}/manifest.json`;
+      const cleanUrl = normalizeBaseUrl(url);
+      const manifestUrl = joinBaseUrl(cleanUrl, "manifest.json");
 
       logger.debug(`Fetching manifest from ${manifestUrl}`);
 
@@ -166,7 +167,7 @@ export class ServerDetector {
    */
   public static async testConnection(url: string, timeout = 3000): Promise<boolean> {
     try {
-      const cleanUrl = url.replace(/\/+$/, "");
+      const cleanUrl = normalizeBaseUrl(url);
       await axios.get(cleanUrl, {
         timeout,
         validateStatus: () => true, // Accept any status

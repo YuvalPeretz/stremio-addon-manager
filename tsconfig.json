@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "jsx": "react-jsx",
     // Strict Type-Checking Options
     "strict": true,
     "noImplicitAny": true,
@@ -42,4 +43,3 @@
   },
   "exclude": ["node_modules", "dist", "**/*.spec.ts", "**/*.test.ts"]
 }
-

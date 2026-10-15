@@ -3,6 +3,17 @@
  */
 
 import type { OperatingSystem, LinuxDistribution } from "../types/common.js";
+import type { AddonProduct } from "./product.js";
+
+export type { AddonProduct } from "./product.js";
+export {
+  DEFAULT_ADDON_PRODUCT,
+  normalizeAddonProduct,
+  isTranslatedSubtitlesProduct,
+  productPackageDir,
+  productLabel,
+  TRANSLATED_SUBTITLES_DEFAULT_PORT,
+} from "./product.js";
 
 /**
  * Access method for the addon
@@ -20,7 +31,95 @@ export enum AccessMethod {
 export enum InstallationType {
   LOCAL = "local",
   REMOTE = "remote",
+  CUSTOM_SCRIPT = "custom_script",
 }
+
+/**
+ * Artifact staging mode for custom-script installs.
+ * - built: stage packaged addon-server (package.json + dist)
+ * - source: stage source tree (package.json + src)
+ */
+export type CustomScriptArtifactMode = "built" | "source";
+
+/**
+ * Whether install and update use the same script file or separate files.
+ */
+export type CustomScriptUpdateScriptMode = "same" | "separate";
+
+/**
+ * Deploy mode passed to the user script as DEPLOY_MODE.
+ */
+export type CustomScriptDeployMode = "install" | "update" | "config";
+
+/**
+ * Custom-script installation settings (dual Gateway apps).
+ * Scripts are embedded only in the ADMIN artifact; publicUrl is Stremio, managementUrl is private admin.
+ */
+export interface CustomScriptConfig {
+  artifactMode: CustomScriptArtifactMode;
+  updateScriptMode: CustomScriptUpdateScriptMode;
+  /** Relative path inside the ADMIN artifact (default: deploy/install.sh) */
+  installScriptRelPath: string;
+  /** Relative path inside the ADMIN artifact (default: deploy/update.sh) */
+  updateScriptRelPath: string;
+  /** Env var names the user opted to inject into the script process */
+  injectedVars: string[];
+  /** Full base URL for the public Stremio app (may include /svc-xxx/ path prefix) */
+  publicUrl: string;
+  /** Full base URL for the private admin app (may include /svc-xxx/ path prefix) */
+  managementUrl: string;
+  /**
+   * Gateway Manager SSH target (`user@host` or `user@host:port`).
+   * When set, Electron uploads staged ADDON/ADMIN trees via SSHManager before the user script runs
+   * and injects ADDON_REMOTE_STAGING / ADMIN_REMOTE_STAGING / MANAGER_SSH.
+   */
+  managerSsh?: string;
+  /**
+   * Optional SSH password for Manager uploads (key auth still preferred / tried first).
+   * Persisted for update re-runs. Never log this value.
+   */
+  managerSshPassword?: string;
+  /** Health check path under publicUrl (default: /health) */
+  healthPath?: string;
+  /** SHA-256 of last confirmed script content (for confirm-on-change) */
+  lastScriptHash?: string;
+  /**
+   * Last install/same-mode deploy script body (secret-free).
+   * Used when managementUrl scripts GET is unreachable (LAN HTTPS/TLS).
+   */
+  lastInstallScriptContent?: string;
+  /**
+   * Last separate update-script body when updateScriptMode === "separate".
+   * Used with lastInstallScriptContent for offline/LAN management fallback.
+   */
+  lastUpdateScriptContent?: string;
+  /** Last full env map applied via DEPLOY_MODE=config (for merge-before-write) */
+  lastAppliedEnv?: Record<string, string>;
+  /** Last local path used for the install script (wizard convenience) */
+  lastLocalInstallScriptPath?: string;
+  /** Last local path used for the update script (wizard convenience) */
+  lastLocalUpdateScriptPath?: string;
+}
+
+/**
+ * Defaults for custom-script config fields
+ */
+export const DEFAULT_CUSTOM_SCRIPT_CONFIG: Pick<
+  CustomScriptConfig,
+  | "artifactMode"
+  | "updateScriptMode"
+  | "installScriptRelPath"
+  | "updateScriptRelPath"
+  | "injectedVars"
+  | "healthPath"
+> = {
+  artifactMode: "built",
+  updateScriptMode: "same",
+  installScriptRelPath: "deploy/install.sh",
+  updateScriptRelPath: "deploy/update.sh",
+  injectedVars: [],
+  healthPath: "/health",
+};
 
 /**
  * Provider type
@@ -74,12 +173,22 @@ export interface AddonConfig {
    * Recommended range: 1-10, default: 3
    */
   maxConcurrency?: number;
+  /** Provider mode: "parallel" queries all simultaneously; "ordered" tries in priority order */
+  streamProviderMode?: "parallel" | "ordered";
+  /** Ordered list of provider IDs to use, e.g. [Provider.REAL_DEBRID, Provider.TORBOX] */
+  streamProviderOrder?: Provider[];
+  /** Maximum number of concurrent viewers (unique IPs). 0 = unlimited. Default: 10. */
+  maxConcurrentViewers?: number;
   /**
    * Environment variable overrides.
    * These take precedence over config-derived values when generating service files.
    * Use null to remove an override and reset to default/config value.
    */
   environmentVariables?: Record<string, string | null>;
+  /** TranslatedSubtitles: single ISO 639-2/3 target language (e.g. heb, eng). */
+  targetLang?: string;
+  /** TranslatedSubtitles: catalog model id (default qwen3-1.7b-q4_k_m). */
+  llmModelId?: string;
 }
 
 /**
@@ -120,6 +229,11 @@ export interface PathsConfig {
   logs: string;
   backups: string;
   sshKey?: string;
+  /**
+   * Directory for addon-server local library (`library.json`). If unset, install/sync uses
+   * `<addonDirectory>/local-library`. Set to empty string to omit LOCAL_LIBRARY_DATA_DIR from the unit (feature off).
+   */
+  localLibraryDataDir?: string;
 }
 
 /**
@@ -128,6 +242,7 @@ export interface PathsConfig {
 export interface SecretsConfig {
   realDebridToken?: string;
   duckdnsToken?: string;
+  torboxToken?: string;
   [key: string]: string | undefined;
 }
 
@@ -138,6 +253,35 @@ export interface InstallationConfig {
   type: InstallationType;
   accessMethod: AccessMethod;
   target?: TargetConfig;
+  /** Present when type === InstallationType.CUSTOM_SCRIPT */
+  customScript?: CustomScriptConfig;
+}
+
+/**
+ * Update history entry for addon
+ */
+export interface AddonUpdateHistoryEntry {
+  timestamp: Date;
+  fromVersion: string;
+  toVersion: string;
+  success: boolean;
+  duration: number;                   // milliseconds
+  backupId?: string;
+  rollbackId?: string;               // If this was a rollback
+  error?: string;                     // Error message if failed
+  initiatedBy?: 'user' | 'auto';     // Who initiated the update
+}
+
+/**
+ * Backup entry for addon
+ */
+export interface AddonBackupEntry {
+  id: string;                         // backup-20260121-143022
+  timestamp: Date;
+  version: string;                    // Version at time of backup
+  path: string;                       // Path to backup archive
+  size: number;                       // Backup size in bytes
+  type: 'pre-update' | 'manual' | 'scheduled';
 }
 
 /**
@@ -151,8 +295,22 @@ export interface AddonMetadata {
   serviceName: string;
   port: number;
   domain: string;
+  /**
+   * Installable product. Missing on legacy entries — treat as `"streaming"`.
+   */
+  product?: AddonProduct;
   createdAt: string;
   updatedAt: string;
+  
+  // Version tracking
+  version?: string;                   // Current installed version
+  installedAt?: string;               // When first installed (ISO date string)
+  lastUpdated?: string;               // Last update timestamp (ISO date string)
+  updateHistory?: AddonUpdateHistoryEntry[];
+  
+  // Backup tracking
+  backups?: AddonBackupEntry[];
+  maxBackups?: number;                // Keep last N backups (default: 5)
 }
 
 /**
@@ -170,6 +328,8 @@ export interface AddonRegistryData {
 export interface AddonManagerConfig {
   addonId?: string;
   serviceName?: string;
+  /** Installable product. Missing on legacy configs — treat as `"streaming"`. */
+  product?: AddonProduct;
   installation: InstallationConfig;
   addon: AddonConfig;
   features: FeatureConfig;
@@ -181,6 +341,7 @@ export interface AddonManagerConfig {
  * Default configuration values
  */
 export const DEFAULT_CONFIG: Partial<AddonManagerConfig> = {
+  product: "streaming",
   addon: {
     name: "My_Private_Addon",
     version: "1.0.0",
@@ -192,6 +353,9 @@ export const DEFAULT_CONFIG: Partial<AddonManagerConfig> = {
     availabilityCheckLimit: 15,
     maxStreams: 5,
     maxConcurrency: 3,
+    streamProviderMode: "parallel",
+    streamProviderOrder: [Provider.REAL_DEBRID],
+    maxConcurrentViewers: 10,
   },
   features: {
     firewall: true,

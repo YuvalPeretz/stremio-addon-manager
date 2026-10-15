@@ -5,7 +5,8 @@
 
 import fs from "node:fs/promises";
 import { AddonRegistry } from "./registry.js";
-import type { AddonMetadata } from "./types.js";
+import type { AddonMetadata, AddonProduct } from "./types.js";
+import { normalizeAddonProduct } from "./product.js";
 import { logger } from "../utils/logger.js";
 
 /**
@@ -95,6 +96,46 @@ function validateDomain(domain: string): { valid: boolean; error?: string } {
 }
 
 /**
+ * Validate Gateway-style domain metadata (hostname, IP, or host + /svc-… path prefix).
+ */
+function validateGatewayDomain(domain: string): { valid: boolean; error?: string } {
+  if (!domain || domain.trim().length === 0) {
+    return { valid: false, error: "Domain cannot be empty" };
+  }
+  // host, host:port, host/path, host:port/path, IPv4 variants
+  const gatewayDomainRegex =
+    /^(localhost|(\d{1,3}\.){3}\d{1,3}|[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*)(:\d{1,5})?(\/[^\s]*)?$/;
+  if (!gatewayDomainRegex.test(domain.trim())) {
+    return { valid: false, error: "Invalid Gateway domain/base format" };
+  }
+  return { valid: true };
+}
+
+/** Default container PORT stored in registry for custom_script installs. */
+export const CUSTOM_SCRIPT_REGISTRY_PORT = 8080;
+
+/**
+ * Derive registry/config domain from a public base URL (keeps Gateway /svc-… path).
+ */
+export function domainFromPublicUrl(publicUrl: string): string {
+  try {
+    const u = new URL(publicUrl.includes("://") ? publicUrl : `https://${publicUrl}`);
+    return u.host + (u.pathname && u.pathname !== "/" ? u.pathname.replace(/\/+$/, "") : "");
+  } catch {
+    return publicUrl.replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+  }
+}
+
+export interface CreateAddonOptions {
+  /** Skip port uniqueness (custom_script often shares container port 8080) */
+  skipPortUniqueness?: boolean;
+  /** Allow host/path Gateway bases instead of DNS-only domains */
+  allowGatewayDomain?: boolean;
+  /** Installable product (default streaming) */
+  product?: AddonProduct;
+}
+
+/**
  * Generate service name from addon ID
  */
 export function generateServiceName(addonId: string): string {
@@ -131,7 +172,8 @@ export class AddonRegistryManager {
     name: string,
     port: number,
     domain: string,
-    configPath: string
+    configPath: string,
+    options?: CreateAddonOptions
   ): Promise<AddonMetadata> {
     await this.initialize();
 
@@ -158,8 +200,8 @@ export class AddonRegistryManager {
       throw new Error(portValidation.error);
     }
 
-    // Check port availability
-    if (this.registry.portInUse(port)) {
+    // Check port availability (skipped for custom_script — container PORT is metadata-only)
+    if (!options?.skipPortUniqueness && this.registry.portInUse(port)) {
       const existingAddon = this.registry.list().find((a) => a.port === port);
       const suggestedPort = await this.findAvailablePort(port + 1, 10).catch(() => port + 1);
       throw new Error(
@@ -168,8 +210,10 @@ export class AddonRegistryManager {
       );
     }
 
-    // Validate domain
-    const domainValidation = validateDomain(domain);
+    // Validate domain (Gateway bases may include /svc-… path prefix)
+    const domainValidation = options?.allowGatewayDomain
+      ? validateGatewayDomain(domain)
+      : validateDomain(domain);
     if (!domainValidation.valid) {
       throw new Error(domainValidation.error);
     }
@@ -198,6 +242,7 @@ export class AddonRegistryManager {
       serviceName,
       port,
       domain,
+      product: normalizeAddonProduct(options?.product),
     });
 
     // Save registry

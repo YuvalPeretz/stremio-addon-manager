@@ -26,6 +26,16 @@ const packages = [
     name: 'addon-server',
     files: ['dist', 'package.json', 'README.md', 'bin', 'landing.html'],
   },
+  {
+    name: 'party-server',
+    files: ['dist', 'package.json'],
+  },
+  {
+    // Built by the translated-subtitles package agent; skip if not present yet.
+    name: 'translated-subtitles',
+    files: ['dist', 'package.json', 'README.md', 'bin', 'models', 'mt-sidecar'],
+    optional: true,
+  },
 ];
 
 console.log('📦 Copying packages to CLI resources...\n');
@@ -41,9 +51,14 @@ for (const pkg of packages) {
   console.log(`   From: ${sourceRoot}`);
   console.log(`   To: ${targetDir}`);
 
-  // Ensure package is built
+  const isOptional = Boolean(pkg.optional);
   const distDir = path.join(sourceRoot, 'dist');
-  if (!fs.existsSync(distDir)) {
+  if (!fs.existsSync(sourceRoot) || !fs.existsSync(distDir)) {
+    if (isOptional) {
+      console.warn(`   ⚠️  Optional package ${pkg.name} not built yet — skipping`);
+      totalSkipped++;
+      continue;
+    }
     console.error(`❌ Error: ${pkg.name}/dist does not exist. Please build ${pkg.name} first:`);
     console.error(`   cd packages/${pkg.name} && npm run build`);
     process.exit(1);
@@ -72,7 +87,8 @@ for (const pkg of packages) {
     try {
       const stat = fs.statSync(source);
       if (stat.isDirectory()) {
-        fs.cpSync(source, target, { recursive: true });
+        // force: true prevents EEXIST on Windows when the target already exists
+        fs.cpSync(source, target, { recursive: true, force: true });
         console.log(`   ✓ Copied directory: ${item}`);
       } else {
         // Ensure target directory exists for files

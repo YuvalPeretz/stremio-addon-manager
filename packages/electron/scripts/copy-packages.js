@@ -75,6 +75,13 @@ if (!fs.existsSync(addonServerResources)) {
   process.exit(1);
 }
 
+const translatedSubtitlesResources = path.join(resourcesSourceDir, 'translated-subtitles');
+if (fs.existsSync(translatedSubtitlesResources)) {
+  console.log(`   ✓ CLI resources include translated-subtitles`);
+} else {
+  console.warn(`   ⚠️  CLI resources missing translated-subtitles (optional until that package is built)`);
+}
+
 console.log(`   ✓ CLI resources verified (contains core and addon-server)\n`);
 
 // Create target directory
@@ -139,6 +146,17 @@ if (fs.existsSync(legacyAddonServerSource)) {
   }
   fs.cpSync(legacyAddonServerSource, legacyAddonServerTarget, { recursive: true });
   console.log(`   ✓ Copied addon-server to legacy location: resources/addon-server/`);
+}
+
+const legacyTranslatedSource = path.join(resourcesSourceDir, 'translated-subtitles');
+const legacyTranslatedTarget = path.resolve(resourcesDir, 'translated-subtitles');
+if (fs.existsSync(legacyTranslatedSource)) {
+  console.log(`\n📁 Copying translated-subtitles to legacy location...`);
+  if (fs.existsSync(legacyTranslatedTarget)) {
+    fs.rmSync(legacyTranslatedTarget, { recursive: true, force: true });
+  }
+  fs.cpSync(legacyTranslatedSource, legacyTranslatedTarget, { recursive: true });
+  console.log(`   ✓ Copied translated-subtitles to legacy location: resources/translated-subtitles/`);
 }
 
 console.log(`\n✅ CLI package copied successfully!`);

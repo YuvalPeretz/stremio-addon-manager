@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Addon management</title>
+    <script>
+      (function () {
+        var p = location.pathname;
+        var base = p.endsWith("/") ? p : p + "/";
+        var l = document.createElement("link");
+        l.rel = "stylesheet";
+        l.href = base + "assets/management.css";
+        document.head.appendChild(l);
+      })();
+    </script>
+  </head>
+  <body>
+    <div class="app">
+      <header class="header">
+        <h1>Stremio addon</h1>
+        <p class="tagline">Private management</p>
+      </header>
+      <nav class="tabs" id="tab-nav">
+        <button type="button" class="tab active" id="tab-requests" data-tab="requests">Requests</button>
+        <button type="button" class="tab" id="tab-cache" data-tab="cache">Cache</button>
+        <button type="button" class="tab" id="tab-clients" data-tab="clients">Clients</button>
+        <button type="button" class="tab" id="tab-logs" data-tab="logs">Logs</button>
+      </nav>
+      <main id="main">
+        <section id="view-requests" class="view">
+          <div class="toolbar">
+            <input type="search" id="filter-q" placeholder="Filter (type, id, title)…" autocomplete="off" />
+            <label class="inline"
+              >Kind
+              <select id="filter-kind">
+                <option value="">All</option>
+                <option value="stream">stream</option>
+                <option value="torbox">torbox (outbound API)</option>
+                <option value="remake">remake</option>
+              </select>
+            </label>
+            <label class="inline"
+              >Sort
+              <select id="filter-sort">
+                <option value="at">Time</option>
+                <option value="durationMs">Duration</option>
+                <option value="streamCount">Streams</option>
+              </select>
+            </label>
+            <label class="inline"
+              >Order
+              <select id="filter-order">
+                <option value="desc">Newest / high</option>
+                <option value="asc">Oldest / low</option>
+              </select>
+            </label>
+            <button type="button" id="btn-refresh" class="btn">Refresh</button>
+            <span class="inline" id="poll-status" title="Pauses when you switch to another tab">Auto-refresh: 10s</span>
+          </div>
+          <div class="table-wrap">
+            <table class="data">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Kind</th>
+                  <th>Type</th>
+                  <th>Stremio id</th>
+                  <th>Cache</th>
+                  <th>ms</th>
+                  <th>Streams</th>
+                </tr>
+              </thead>
+              <tbody id="tbody-requests"></tbody>
+            </table>
+          </div>
+          <p class="hint" id="list-hint"></p>
+          <p class="hint">
+            <strong>stream</strong> = Stremio hits this addon ·
+            <strong>torbox</strong> = outbound calls to api.torbox.app (checkcached / createtorrent / requestdl)
+          </p>
+        </section>
+        <section id="view-detail" class="view hidden">
+          <p>
+            <button type="button" class="btn btn-ghost" id="btn-back">← Back to list</button>
+          </p>
+          <div id="detail-content"></div>
+        </section>
+        <section id="view-cache" class="view hidden">
+          <p class="hint" id="cache-poll-hint">Auto-refresh: 10s (tab visible)</p>
+          <div class="cache-toolbar">
+            <button type="button" class="btn" id="btn-cache-refresh">Refresh now</button>
+          </div>
+          <div id="cache-content" class="cache-content">
+            <p class="hint">Loading…</p>
+          </div>
+        </section>
+        <section id="view-clients" class="view hidden">
+          <p class="hint" id="clients-poll-hint">Auto-refresh: 10s (pauses in background tab)</p>
+          <div class="cache-toolbar">
+            <button type="button" class="btn" id="btn-clients-refresh">Refresh now</button>
+          </div>
+          <div id="clients-content" class="clients-content">
+            <p class="hint">Loading…</p>
+          </div>
+        </section>
+        <section id="view-logs" class="view hidden">
+          <p class="hint" id="logs-poll-hint">Auto-refresh: 5s (tab visible)</p>
+          <div class="toolbar">
+            <input type="search" id="logs-filter-q" placeholder="Filter log text…" autocomplete="off" />
+            <label class="inline"
+              >Level
+              <select id="logs-filter-level">
+                <option value="">All</option>
+                <option value="error">error</option>
+                <option value="warn">warn</option>
+                <option value="log">log</option>
+                <option value="info">info</option>
+                <option value="debug">debug</option>
+              </select>
+            </label>
+            <label class="inline"
+              >Lines
+              <select id="logs-filter-lines">
+                <option value="200">200</option>
+                <option value="400" selected>400</option>
+                <option value="800">800</option>
+                <option value="1500">1500</option>
+              </select>
+            </label>
+            <button type="button" class="btn" id="btn-logs-refresh">Refresh</button>
+            <label class="inline"
+              ><input type="checkbox" id="logs-autoscroll" checked /> Auto-scroll</label
+            >
+          </div>
+          <pre id="logs-content" class="log-view" aria-label="Server log output">Loading…</pre>
+          <p class="hint" id="logs-meta"></p>
+        </section>
+      </main>
+    </div>
+    <div id="toast" class="toast" hidden></div>
+    <script>
+      (function () {
+        var p = location.pathname;
+        var base = p.endsWith("/") ? p : p + "/";
+        var s = document.createElement("script");
+        s.defer = true;
+        s.src = base + "assets/management.js";
+        document.body.appendChild(s);
+      })();
+    </script>
+  </body>
+</html>

@@ -70,6 +70,13 @@ export class CacheManager {
   }
 
   /**
+   * Read stream entry without updating hit/miss stats (e.g. management logging before handleStreamRequest).
+   */
+  peekStream(key: string): unknown | undefined {
+    return this.streamCache.get(key);
+  }
+
+  /**
    * Get stream from cache
    */
   getStream(key: string): unknown | undefined {
@@ -85,9 +92,102 @@ export class CacheManager {
 
   /**
    * Set stream in cache
+   * @param ttl Optional TTL override in seconds (uses cache default when omitted)
    */
-  setStream(key: string, value: unknown): void {
-    this.streamCache.set(key, value);
+  setStream(key: string, value: unknown, ttl?: number): void {
+    if (ttl !== undefined) {
+      this.streamCache.set(key, value, ttl);
+    } else {
+      this.streamCache.set(key, value);
+    }
+  }
+
+  delMetadata(key: string): number {
+    return this.metadataCache.del(key);
+  }
+
+  delTorrentSearch(key: string): number {
+    return this.torrentSearchCache.del(key);
+  }
+
+  delStream(key: string): number {
+    return this.streamCache.del(key);
+  }
+
+  /**
+   * Delete all stream-cache keys whose names start with `stream_${infoHash}` (lowercase hash).
+   */
+  deleteStreamCacheKeysByInfoHashPrefix(infoHash: string): number {
+    const lower = infoHash.toLowerCase();
+    const prefix = `stream_${lower}`;
+    const keys = this.streamCache.keys().filter((k) => k.startsWith(prefix));
+    let n = 0;
+    for (const k of keys) {
+      n += this.streamCache.del(k);
+    }
+    return n;
+  }
+
+  private flushNodeCache(cache: NodeCache): void {
+    if (typeof (cache as NodeCache & { flushAll?: () => void }).flushAll === "function") {
+      (cache as NodeCache & { flushAll: () => void }).flushAll();
+    } else {
+      for (const k of cache.keys()) {
+        cache.del(k);
+      }
+    }
+  }
+
+  /** Remove all metadata keys (Cinemeta, subtitles, etc.). */
+  flushMetadataCache(): void {
+    this.flushNodeCache(this.metadataCache);
+  }
+
+  /** Remove all torrent search keys. */
+  flushTorrentSearchCache(): void {
+    this.flushNodeCache(this.torrentSearchCache);
+  }
+
+  /** Remove all stream cache keys (request lists + per-hash RD link cache). */
+  flushStreamCacheStore(): void {
+    this.flushNodeCache(this.streamCache);
+  }
+
+  /** Clear all three stores. */
+  flushAllCaches(): void {
+    this.flushMetadataCache();
+    this.flushTorrentSearchCache();
+    this.flushStreamCacheStore();
+  }
+
+  /**
+   * Reset hit/miss counters (e.g. after a full clear so rates stay meaningful).
+   */
+  resetStats(): void {
+    this.stats = {
+      torrentSearchHits: 0,
+      torrentSearchMisses: 0,
+      streamHits: 0,
+      streamMisses: 0,
+      metadataHits: 0,
+      metadataMisses: 0,
+    };
+  }
+
+  /**
+   * Management API: clear one or all in-memory stores; full clear also resets hit/miss stats.
+   */
+  clearLayer(layer: "metadata" | "torrentSearch" | "stream" | "all"): void {
+    if (layer === "metadata") {
+      this.flushMetadataCache();
+    } else if (layer === "torrentSearch") {
+      this.flushTorrentSearchCache();
+    } else if (layer === "stream") {
+      this.flushStreamCacheStore();
+    } else {
+      this.flushAllCaches();
+      this.resetStats();
+    }
   }
 
   /**
