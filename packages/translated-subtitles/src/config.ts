@@ -4,7 +4,7 @@
 
 import os from "node:os";
 import path from "node:path";
-import type { CatalogEngine, GlossaryEntry, ModelCatalogEntry } from "./types.js";
+import type { CatalogEngine, GlossaryEntry, ModelCatalogEntry, MtTokenizer } from "./types.js";
 import {
   DEFAULT_CACHE_TTL_SEC,
   DEFAULT_LLM_SERVER_URL,
@@ -16,7 +16,13 @@ import {
   MAX_TRANSLATE_BATCH_SIZE,
   MIN_TRANSLATE_BATCH_SIZE,
 } from "./env-keys.js";
-import { DEFAULT_MODEL_ID, catalogEngine, getModelById, requireModelById } from "./model-catalog.js";
+import {
+  DEFAULT_MODEL_ID,
+  catalogEngine,
+  catalogTokenizer,
+  getModelById,
+  requireModelById,
+} from "./model-catalog.js";
 
 export const DEFAULT_MT_MODEL_FILES: readonly string[] = [
   "model.bin",
@@ -53,6 +59,7 @@ export interface ServerConfig {
   mtModelFiles: string[];
   mtPython: string;
   mtCt2Bin: string;
+  mtTokenizer: MtTokenizer;
   openSubtitlesBaseUrl: string;
   subtitleCacheDir: string;
   subtitleCacheTtlSec: number;
@@ -241,6 +248,7 @@ export function loadConfig(): ServerConfig {
     mtModelFiles: engine === "mt" ? parseMtModelFiles(process.env.MT_MODEL_FILES, mtFallbackFiles) : [],
     mtPython: (process.env.MT_PYTHON ?? "").trim(),
     mtCt2Bin: (process.env.MT_CT2_BIN ?? "").trim(),
+    mtTokenizer: engine === "mt" && catalog ? catalogTokenizer(catalog) : "nllb",
     openSubtitlesBaseUrl:
       (process.env.OPENSUBTITLES_BASE_URL ?? "").trim().replace(/\/+$/, "") ||
       DEFAULT_OPENSUBTITLES_BASE_URL,
@@ -294,6 +302,7 @@ export function applyCatalogModel(config: ServerConfig, modelId: string): ModelC
     config.mtModelSha256 = entry.sha256;
     config.mtModelBytes = entry.expectedBytes;
     config.mtModelFiles = entry.files && entry.files.length > 0 ? [...entry.files] : [...DEFAULT_MT_MODEL_FILES];
+    config.mtTokenizer = catalogTokenizer(entry);
   } else {
     config.llmModelUrl = entry.url;
     config.llmModelFilename = entry.filename;
@@ -304,6 +313,7 @@ export function applyCatalogModel(config: ServerConfig, modelId: string): ModelC
     config.mtModelSha256 = "";
     config.mtModelBytes = 0;
     config.mtModelFiles = [];
+    config.mtTokenizer = "nllb";
   }
   return entry;
 }

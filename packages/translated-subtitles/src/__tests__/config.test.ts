@@ -91,5 +91,17 @@ describe("loadConfig", () => {
     expect(config.llmModelFilename).toBe("");
     expect(config.mtModelDirName).toBe("nllb-200-distilled-600M-ct2-int8");
     expect(config.mtModelUrl).toContain("model.bin");
+    expect(config.mtTokenizer).toBe("nllb");
+  });
+
+  it("loads QuickMT with its own tokenizer and snapshot files", async () => {
+    vi.stubEnv("LLM_MODEL_ID", "quickmt-en-he");
+    const config = await freshLoadConfig();
+    expect(config.engine).toBe("mt");
+    expect(config.mtTokenizer).toBe("quickmt");
+    expect(config.mtModelDirName).toBe("quickmt-en-he");
+    expect(config.mtModelFiles).toContain("src.spm.model");
+    expect(config.mtModelFiles).toContain("tgt.spm.model");
+    expect(config.llmModelUrl).toBe("");
   });
 });

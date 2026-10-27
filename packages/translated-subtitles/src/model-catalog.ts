@@ -6,7 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ModelCatalogEntry, ModelCatalogFile } from "./types.js";
+import type { ModelCatalogEntry, ModelCatalogFile, MtTokenizer } from "./types.js";
 
 const catalogFileUrl = new URL("../models/catalog.json", import.meta.url);
 
@@ -56,6 +56,10 @@ export function getModelById(id: string): ModelCatalogEntry | undefined {
 
 export function catalogEngine(entry: ModelCatalogEntry): "llm" | "mt" {
   return entry.engine === "mt" ? "mt" : "llm";
+}
+
+export function catalogTokenizer(entry: ModelCatalogEntry): MtTokenizer {
+  return entry.tokenizer === "quickmt" ? "quickmt" : "nllb";
 }
 
 export function requireModelById(id: string): ModelCatalogEntry {

@@ -12,41 +12,15 @@ import type { TorrentInfo } from "./types.js";
 import type { Stream } from "./types.js";
 
 // ─── Quality score (higher = better) ─────────────────────────────────────────
+//
+// Resolution is the top digit. Inside one resolution the order is source, then
+// HDR, then codec. Seeds, audio, and the Q/S label only break ties — they cannot
+// lift a WEB-DL AVC over a BluRay HEVC of the same resolution, or a 1080p over a 4K.
 
-const RESOLUTION_SCORE: Record<string, number> = {
-  "2160p": 100,
-  "4k": 100,
-  uhd: 100,
-  "1080p": 80,
-  "1080i": 75,
-  "720p": 60,
-  "480p": 35,
-  "360p": 20,
-  sd: 15,
-};
-
-// Bonus points added on top of resolution score
-const CODEC_BONUS: Record<string, number> = {
-  hevc: 5,
-  x265: 5,
-  h265: 5,
-  av1: 4,
-  hdr: 8,
-  hdr10: 9,
-  "hdr10+": 10,
-  dv: 10,
-  "dolby vision": 10,
-  remux: 12,
-  bluray: 6,
-  "blu-ray": 6,
-  bdrip: 5,
-  "web-dl": 3,
-  webdl: 3,
-  webrip: 2,
-  hdtv: 1,
-  heb: 3,
-  hebrew: 3, // user preference
-};
+const RESOLUTION_WEIGHT = 1_000_000;
+const SOURCE_WEIGHT = 10_000;
+const HDR_WEIGHT = 1_000;
+const CODEC_WEIGHT = 100;
 
 const SOURCE_SCORE: Record<string, number> = {
   "Torrentio/Q": 12, // quality-sorted discovery — preferred in pre-sort
@@ -116,7 +90,112 @@ export function parseResolution(title: string): string {
   if (/\b720p\b/.test(lower)) return "720p";
   if (/\b480p\b/.test(lower)) return "480p";
   if (/\b360p\b/.test(lower)) return "360p";
+  if (/\bsd\b/.test(lower)) return "SD";
   return "";
+}
+
+const RESOLUTION_RANK: Record<string, number> = {
+  "4K": 100,
+  "1080p": 80,
+  "1080i": 75,
+  "720p": 60,
+  "480p": 35,
+  "360p": 20,
+  SD: 15,
+};
+
+/** Remux > BluRay > WEB-DL > WEBRip > HDTV > unlabeled > CAM. One bucket, no stacking. */
+function sourceRank(lower: string): number {
+  if (/\b(remux|bdremux)\b/.test(lower)) return 6;
+  if (/\b(blu[- ]?ray|bdrip|brrip)\b/.test(lower)) return 5;
+  if (/\bweb[-. ]?rip\b/.test(lower)) return 3;
+  if (/\bweb[-. ]?dl\b/.test(lower) || /\bweb\b/.test(lower)) return 4;
+  if (/\bhdtv\b/.test(lower)) return 2;
+  if (/\b(cam|hdcam|telesync|hdts|telecine)\b/.test(lower)) return 0;
+  return 1;
+}
+
+/** Dolby Vision > HDR10+ > HDR10 > HDR > none. DVD is not Dolby Vision. */
+function hdrRank(lower: string): number {
+  if (/\bdolby[\s.-]?vision\b/.test(lower) || /\bdovi\b/.test(lower) || /\bdv\b/.test(lower)) return 4;
+  if (/\bhdr10\+/.test(lower) || /\bhdr10plus\b/.test(lower)) return 3;
+  if (/\bhdr10\b/.test(lower)) return 2;
+  if (/\bhdr\b/.test(lower)) return 1;
+  return 0;
+}
+
+/** HEVC > AV1 > AVC > unlabeled. */
+function codecRank(lower: string): number {
+  if (/\b(hevc|x265|h\.?265)\b/.test(lower)) return 3;
+  if (/\bav1\b/.test(lower)) return 2;
+  if (/\b(avc|x264|h\.?264)\b/.test(lower)) return 1;
+  return 0;
+}
+
+/**
+ * Rank a title for sorting. A lower tier cannot overtake a higher one:
+ * resolution, then source, then HDR, then codec, then audio / Hebrew / seeds.
+ */
+function qualityScore(text: string): number {
+  const lower = text.toLowerCase();
+  const resolution = resolutionRank(text) ?? 0;
+  let score = resolution * RESOLUTION_WEIGHT;
+  score += sourceRank(lower) * SOURCE_WEIGHT;
+  score += hdrRank(lower) * HDR_WEIGHT;
+  score += codecRank(lower) * CODEC_WEIGHT;
+  score += scoreAudioPreference(text);
+  if (/\b(heb|hebrew)\b/.test(lower)) score += 3;
+  score += Math.min(parseSeedCount(text) * 0.5, 20);
+  const sizeGb = parseSizeGb(text);
+  // Below every real file of this resolution, still above the next resolution down.
+  if (sizeGb > 0 && sizeGb < 0.1) score -= 100_000;
+  return score;
+}
+
+/** Numeric rank for a title, or null when no resolution is present. */
+export function resolutionRank(title: string): number | null {
+  const label = parseResolution(title);
+  if (!label) return null;
+  const rank = RESOLUTION_RANK[label];
+  return rank === undefined ? null : rank;
+}
+
+export function streamResolutionRank(stream: Pick<Stream, "name" | "title">): number | null {
+  return resolutionRank(`${stream.name} ${stream.title}`);
+}
+
+/** True when every stream has the same known resolution. */
+export function allSameResolution(streams: Array<Pick<Stream, "name" | "title">>): boolean {
+  if (streams.length === 0) return false;
+  const ranks = streams.map(streamResolutionRank);
+  const first = ranks[0];
+  if (first == null) return false;
+  return ranks.every((rank) => rank === first);
+}
+
+/**
+ * Best TorBox stream strictly below the baseline resolution.
+ * Candidates must already have been fetched; this does not search.
+ */
+export function pickLowerResolutionTorBox(baseline: Stream[], candidates: Stream[]): Stream | null {
+  if (!allSameResolution(baseline)) return null;
+  const top = streamResolutionRank(baseline[0]);
+  if (top == null) return null;
+  const used = new Set(baseline.map((stream) => stream.url).filter((url) => url.length > 0));
+  let best: Stream | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  for (const candidate of candidates) {
+    if (candidate.behaviorHints?.bingeGroup !== "torbox") continue;
+    if (candidate.url && used.has(candidate.url)) continue;
+    const rank = streamResolutionRank(candidate);
+    if (rank == null || rank >= top) continue;
+    const score = qualityScore(`${candidate.name} ${candidate.title}`);
+    if (score > bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+  return best;
 }
 
 /**
@@ -124,37 +203,8 @@ export function parseResolution(title: string): string {
  * Higher = better quality / more preferred.
  */
 export function scoreTorrent(torrent: TorrentInfo): number {
-  const title = (torrent.title + " " + (torrent.quality ?? "")).toLowerCase();
-  let score = 0;
-
-  // Resolution
-  for (const [key, val] of Object.entries(RESOLUTION_SCORE)) {
-    if (title.includes(key)) {
-      score += val;
-      break;
-    }
-  }
-
-  // Codec / source bonuses
-  for (const [key, val] of Object.entries(CODEC_BONUS)) {
-    if (title.includes(key)) score += val;
-  }
-
-  // Search source bonus
-  score += SOURCE_SCORE[torrent.source ?? ""] ?? 0;
-
-  // Dual/multi audio preferred; single-language dub packs deprioritized
-  score += scoreAudioPreference(torrent.title);
-
-  // Seeds: diminishing returns, capped at +20
-  const seeds = parseSeedCount(torrent.title);
-  score += Math.min(seeds * 0.5, 20);
-
-  // Size penalty for suspiciously small files (< 100 MB likely wrong file / sample)
-  const sizeGb = parseSizeGb(torrent.title);
-  if (sizeGb > 0 && sizeGb < 0.1) score -= 30;
-
-  return score;
+  const text = `${torrent.title} ${torrent.quality ?? ""}`;
+  return qualityScore(text) + (SOURCE_SCORE[torrent.source ?? ""] ?? 0);
 }
 
 /**
@@ -255,28 +305,7 @@ export function buildStreamName(
  * Parses the stream's title (which is the original torrent title).
  */
 function scoreStream(stream: Stream): number {
-  const lower = (stream.title + " " + stream.name).toLowerCase();
-  let score = 0;
-
-  for (const [key, val] of Object.entries(RESOLUTION_SCORE)) {
-    if (lower.includes(key)) {
-      score += val;
-      break;
-    }
-  }
-  for (const [key, val] of Object.entries(CODEC_BONUS)) {
-    if (lower.includes(key)) score += val;
-  }
-
-  score += scoreAudioPreference(stream.title + " " + stream.name);
-
-  const seeds = parseSeedCount(stream.title);
-  score += Math.min(seeds * 0.5, 20);
-
-  const sizeGb = parseSizeGb(stream.title);
-  if (sizeGb > 0 && sizeGb < 0.1) score -= 30;
-
-  return score;
+  return qualityScore(`${stream.title} ${stream.name}`);
 }
 
 /** Torrentio Q before S (RD streams only; locals use isLocalStream). */
@@ -312,13 +341,13 @@ function streamGroupRank(stream: Stream): number {
 }
 
 function compareRemoteSubSort(a: Stream, b: Stream): number {
+  const qa = scoreStream(a);
+  const qb = scoreStream(b);
+  if (qb !== qa) return qb - qa;
   const ra = a.rdCacheScore ?? 0;
   const rb = b.rdCacheScore ?? 0;
   if (rb !== ra) return rb - ra;
-  const ta = torrentioTierRank(a);
-  const tb = torrentioTierRank(b);
-  if (ta !== tb) return ta - tb;
-  return scoreStream(b) - scoreStream(a);
+  return torrentioTierRank(a) - torrentioTierRank(b);
 }
 
 /**
@@ -326,7 +355,8 @@ function compareRemoteSubSort(a: Stream, b: Stream): number {
  *  1. Direct http(s) remotes (TorBox / unrestricted RD).
  *  2. Local files.
  *  3. Magnets last.
- *  Within remotes (direct or magnet): stronger RD instantAvailability, Torrentio Q before S, then title quality.
+ *  Within remotes (direct or magnet): resolution, then source / HDR / codec.
+ *  RD instant availability and Torrentio Q-before-S only break a tie.
  */
 export function sortStreams(streams: Stream[]): Stream[] {
   return streams.sort((a, b) => {

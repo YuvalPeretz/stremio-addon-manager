@@ -75,7 +75,25 @@
       "ramBlurb": "~1.5 GB RAM",
       "hwBlurb": "Pi 4 4GB+ with Python + CTranslate2, or sibling nllb service",
       "qualityBlurb": "Fast / literal · not an LLM — line-by-line MT",
-      "files": ["model.bin", "sentencepiece.bpe.model", "config.json", "shared_vocabulary.txt"]
+      "files": ["model.bin", "sentencepiece.bpe.model", "config.json", "shared_vocabulary.txt"],
+      "tokenizer": "nllb"
+    },
+    {
+      "id": "quickmt-en-he",
+      "displayName": "QuickMT English→Hebrew",
+      "engine": "mt",
+      "tier": "fast-literal",
+      "recommended": false,
+      "experimental": true,
+      "filename": "quickmt-en-he",
+      "url": "https://huggingface.co/quickmt/quickmt-en-he/resolve/main/model.bin",
+      "expectedBytes": 409915789,
+      "sha256": "11034ce42e575f7153cf31acf09f82036f5a49fae66e6b82a9cf470b472b3eb3",
+      "ramBlurb": "~1 GB RAM",
+      "hwBlurb": "Ryzen-class CPU with Python + CTranslate2",
+      "qualityBlurb": "English to Hebrew only · faster and stronger than NLLB-600M on news text",
+      "files": ["model.bin", "src.spm.model", "tgt.spm.model", "config.json"],
+      "tokenizer": "quickmt"
     }
   ]
 }

@@ -1133,9 +1133,7 @@ export async function switchTranslatedSubtitlesModel(
       };
     }
     const warning = raw.attachedSibling
-      ? raw.engine === "mt"
-        ? "NLLB files are on disk. If llama still runs as a sibling container, restart that service so mmap releases the old GGUF."
-        : "New model files are on disk. If llama or NLLB run as sibling containers, restart those services so mmap releases the old files."
+      ? "New model files are on disk, but a sibling llama or translation service is still running. Restart that service so it loads this model."
       : undefined;
     return {
       success: true,

@@ -312,11 +312,6 @@ export function findMatchingFile(
     };
   }
 
-  console.log(`⚠️  No clear episode match in filenames, using first video-like file`);
-  const firstVideo = files.findIndex((f) =>
-    /\.(mkv|mp4|avi|m4v|webm|mov)$/i.test((f.path || f.filename || "").toString())
-  );
-  const idx = firstVideo >= 0 ? firstVideo : 0;
-  const file = files[idx];
-  return { fileId: (file.id as number) || idx, file, index: idx };
+  console.log(`⚠️  No file matches S${season}E${episode}; not using a season pack or the first video`);
+  return { fileId: 0, file: null, index: -1 };
 }

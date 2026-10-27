@@ -13,7 +13,7 @@
 import axios from "axios";
 import type { Stream, TorrentInfo } from "./types.js";
 import type { ServerConfig } from "./config.js";
-import { buildStreamName } from "./stream-sorter.js";
+import { allSameResolution, buildStreamName, resolutionRank, scoreTorrent, streamResolutionRank } from "./stream-sorter.js";
 import { appendRequestLog, uniqueInfoHashes, type ProviderApiCall } from "./management/request-log.js";
 import { pickBestEpisodeFileIndex } from "./episode-matching.js";
 
@@ -155,42 +155,42 @@ function pickFile(
   const videoFiles = files.filter((f) => /\.(mkv|mp4|avi|m4v|mov|ts|wmv)$/i.test(f.name));
   const pool = videoFiles.length > 0 ? videoFiles : files;
 
-  if (pool.length === 1) return pool[0];
+  if (!seasonEpisode) {
+    if (pool.length === 1) return pool[0];
+    const nonMovie = pool.filter((f) => !/\b(?:the\s+)?movie\b|\bfilm\b/i.test(f.name));
+    const fallbackPool = nonMovie.length > 0 ? nonMovie : pool;
+    return fallbackPool.reduce((best, f) => (f.size > best.size ? f : best), fallbackPool[0]);
+  }
 
-  if (seasonEpisode) {
-    // Map knownFileIdx from the full torrent file list onto the video pool when possible.
-    // Torrentio fileIdx is usually an index into all files (including non-video).
-    let mappedKnown: number | undefined;
-    if (knownFileIdx !== undefined && knownFileIdx >= 0 && knownFileIdx < files.length) {
-      const knownName = files[knownFileIdx]?.name;
-      const inPool = pool.findIndex((f) => f.name === knownName && f.id === files[knownFileIdx]?.id);
-      mappedKnown = inPool >= 0 ? inPool : undefined;
-      // If the known index itself is a video file still in pool by reference equality of name+id
-      if (mappedKnown === undefined && /\.(mkv|mp4|avi|m4v|mov|ts|wmv)$/i.test(files[knownFileIdx]?.name ?? "")) {
-        // Fall back: use knownFileIdx only if pool === files (all video)
-        if (pool.length === files.length) mappedKnown = knownFileIdx;
-      }
-    }
-
-    const bestIdx = pickBestEpisodeFileIndex(
-      pool.map((f) => f.name),
-      seasonEpisode.season,
-      seasonEpisode.episode,
-      absoluteEpisode,
-      mappedKnown
-    );
-    if (bestIdx >= 0) {
-      console.log(
-        `[torbox] pickFile → ${pool[bestIdx].name.slice(0, 80)} (poolIdx=${bestIdx}, known=${knownFileIdx ?? "n/a"}, abs=${absoluteEpisode ?? "n/a"})`
-      );
-      return pool[bestIdx];
+  // Map knownFileIdx from the full torrent file list onto the video pool when possible.
+  // Torrentio fileIdx is usually an index into all files (including non-video).
+  let mappedKnown: number | undefined;
+  if (knownFileIdx !== undefined && knownFileIdx >= 0 && knownFileIdx < files.length) {
+    const knownName = files[knownFileIdx]?.name;
+    const inPool = pool.findIndex((f) => f.name === knownName && f.id === files[knownFileIdx]?.id);
+    mappedKnown = inPool >= 0 ? inPool : undefined;
+    if (mappedKnown === undefined && /\.(mkv|mp4|avi|m4v|mov|ts|wmv)$/i.test(files[knownFileIdx]?.name ?? "")) {
+      if (pool.length === files.length) mappedKnown = knownFileIdx;
     }
   }
 
-  // Last resort: largest non-movie video
-  const nonMovie = pool.filter((f) => !/\b(?:the\s+)?movie\b|\bfilm\b/i.test(f.name));
-  const fallbackPool = nonMovie.length > 0 ? nonMovie : pool;
-  return fallbackPool.reduce((best, f) => (f.size > best.size ? f : best), fallbackPool[0]);
+  const bestIdx = pickBestEpisodeFileIndex(
+    pool.map((f) => f.name),
+    seasonEpisode.season,
+    seasonEpisode.episode,
+    absoluteEpisode,
+    mappedKnown
+  );
+  if (bestIdx >= 0) {
+    console.log(
+      `[torbox] pickFile → ${pool[bestIdx].name.slice(0, 80)} (poolIdx=${bestIdx}, known=${knownFileIdx ?? "n/a"}, abs=${absoluteEpisode ?? "n/a"})`
+    );
+    return pool[bestIdx];
+  }
+  console.log(
+    `[torbox] no file matches S${seasonEpisode.season}E${seasonEpisode.episode} — skipping torrent`
+  );
+  return null;
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
@@ -282,16 +282,18 @@ export async function fetchTorBoxStreams(
     return [];
   }
 
+  cachedCandidates.sort((a, b) => scoreTorrent(b) - scoreTorrent(a));
   console.log(`[torbox] ${cachedCandidates.length} cached — fetching stream URLs...`);
 
   const streams: Stream[] = [];
 
-  for (const candidate of cachedCandidates) {
-    if (streams.length >= TB_MAX_STREAMS) break;
-
+  async function resolveCandidate(candidate: (typeof cachedCandidates)[number]): Promise<Stream | null> {
     const entry = cacheData[candidate.infoHash.toLowerCase()];
     const files = (entry as TBCachedEntry)?.files ?? [];
     const pickedFile = pickFile(files, seasonEpisode, absoluteEpisode, candidate.fileIdx);
+    if (seasonEpisode && !pickedFile) {
+      return null;
+    }
 
     const hashKey = candidate.infoHash.toLowerCase();
     let torrentId = torrentIdCache.get(hashKey);
@@ -309,7 +311,7 @@ export async function fetchTorBoxStreams(
         };
       });
       torrentId = createdId ?? undefined;
-      if (!torrentId) continue;
+      if (!torrentId) return null;
     }
 
     const fileId = pickedFile?.id ?? 0;
@@ -321,20 +323,41 @@ export async function fetchTorBoxStreams(
         detail: url != null ? `file_id=${fileId}` : "requestdl failed",
       };
     });
-    if (!url) continue;
+    if (!url) return null;
 
     const { name, title: baseTitle } = buildStreamName(candidate, "TorBox");
     const fileLabel = pickedFile ? `\n📄 ${pickedFile.name.slice(0, 60)}` : "";
-    streams.push({
+    console.log(`[torbox] ✓ Stream: ${candidate.infoHash.substring(0, 8)}... fileId=${fileId}`);
+    return {
       name,
       title: `${baseTitle}${fileLabel}`,
       url,
       infoHash: candidate.infoHash,
       discoveryTier: "quality",
       behaviorHints: { bingeGroup: "torbox", notWebReady: false },
-    });
+    };
+  }
 
-    console.log(`[torbox] ✓ Stream: ${candidate.infoHash.substring(0, 8)}... fileId=${fileId}`);
+  let cursor = 0;
+  for (; cursor < cachedCandidates.length && streams.length < TB_MAX_STREAMS; cursor++) {
+    const stream = await resolveCandidate(cachedCandidates[cursor]);
+    if (stream) streams.push(stream);
+  }
+
+  // The cache check already listed these torrents. If the cap filled with one
+  // resolution, resolve one already-cached lower-resolution torrent and stop.
+  if (streams.length === TB_MAX_STREAMS && allSameResolution(streams)) {
+    const top = streamResolutionRank(streams[0]);
+    for (; cursor < cachedCandidates.length; cursor++) {
+      const candidate = cachedCandidates[cursor];
+      const rank = resolutionRank(candidate.title ?? "");
+      if (top == null || rank == null || rank >= top) continue;
+      const stream = await resolveCandidate(candidate);
+      if (!stream) continue;
+      streams.push(stream);
+      console.log(`[torbox] added lower-resolution alternate after ${TB_MAX_STREAMS} same-resolution streams`);
+      break;
+    }
   }
 
   console.log(`[torbox] Returning ${streams.length} stream(s)`);

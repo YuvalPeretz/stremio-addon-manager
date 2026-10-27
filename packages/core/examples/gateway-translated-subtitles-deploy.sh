@@ -19,7 +19,8 @@
 #
 # On install/update: if LLM_MODEL_PATH is unset, download LLM_MODEL_URL from $ADDON_ENV
 # into LLM_MODELS_DIR / LLM_MODEL_FILENAME and verify size/hash before health checks.
-# For NLLB (LLM_MODEL_ID=nllb-200-distilled-600m-int8), download the CT2 directory
+# For NLLB (LLM_MODEL_ID=nllb-200-distilled-600m-int8) or QuickMT
+# (LLM_MODEL_ID=quickmt-en-he), download the CT2 directory from MT_MODEL_*
 # into MT_MODELS_DIR / MT_MODEL_DIR instead — do not start llama.
 #
 # Electron always injects these into the script process (secret-free body — secrets via ADDON_ENV):

@@ -255,6 +255,14 @@ const GATEWAY_EXAMPLE_SCRIPT = [
   "",
 ].join("\n");
 
+/** Same body as Install → Deploy Script → Load example. */
+export function exampleDeployScript(product: AddonProduct = "streaming"): string {
+  if (product === "translated_subtitles") {
+    return `${TRANSLATED_SUBTITLES_EXAMPLE_NOTES}\n${GATEWAY_EXAMPLE_SCRIPT}`;
+  }
+  return GATEWAY_EXAMPLE_SCRIPT;
+}
+
 export interface DeployScriptStepValue {
   artifactMode: "built" | "source";
   updateScriptMode: "same" | "separate";
@@ -301,11 +309,8 @@ function DeployScriptStep({
   onBack,
   product = "streaming",
 }: DeployScriptStepProps) {
-  const isTranslated = product === "translated_subtitles";
   const stubScript = starterInstallScript(product);
-  const exampleScript = isTranslated
-    ? `${TRANSLATED_SUBTITLES_EXAMPLE_NOTES}\n${GATEWAY_EXAMPLE_SCRIPT}`
-    : GATEWAY_EXAMPLE_SCRIPT;
+  const exampleScript = exampleDeployScript(product);
   const [form] = Form.useForm();
 
   async function handleNext(): Promise<void> {

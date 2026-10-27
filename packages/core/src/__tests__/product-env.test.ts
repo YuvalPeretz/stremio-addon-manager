@@ -185,5 +185,30 @@ describe("EnvVarManager product maps", () => {
     expect(env.LLM_MODEL_URL).toBeUndefined();
     expect(env.LLM_MODEL_FILENAME).toBeUndefined();
     expect(env.LLM_MODEL_SHA256).toBeUndefined();
+    expect(env.MT_TOKENIZER).toBe("nllb");
+  });
+
+  it("QuickMT catalog id sets the quickmt tokenizer and omits GGUF fields", () => {
+    const env = EnvVarManager.getEnvVarsFromConfig(
+      baseConfig({
+        product: "translated_subtitles",
+        addon: {
+          name: "Subs",
+          version: "1.0.0",
+          domain: "subs.local",
+          password: "password12",
+          provider: Provider.REAL_DEBRID,
+          torrentLimit: 15,
+          port: 8080,
+          targetLang: "heb",
+          llmModelId: "quickmt-en-he",
+        },
+      })
+    );
+    expect(env.LLM_MODEL_ID).toBe("quickmt-en-he");
+    expect(env.MT_TOKENIZER).toBe("quickmt");
+    expect(env.MT_MODEL_DIR).toBe("quickmt-en-he");
+    expect(env.MT_MODEL_FILES).toContain("src.spm.model");
+    expect(env.LLM_MODEL_URL).toBeUndefined();
   });
 });

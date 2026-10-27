@@ -5,6 +5,7 @@
 export type ContentType = "movie" | "series";
 export type SubtitleFormat = "srt" | "vtt";
 export type CatalogEngine = "llm" | "mt";
+export type MtTokenizer = "nllb" | "quickmt";
 export type ModelTier = "ultra-light" | "light" | "light-alt" | "balanced" | "fast-literal";
 
 export interface StremioSubtitle {
@@ -74,6 +75,8 @@ export interface ModelCatalogEntry {
   qualityBlurb: string;
   /** Extra snapshot files for MT (CTranslate2 directory). */
   files?: string[];
+  /** nllb prefixes FLORES codes; quickmt uses separate src/tgt sentencepiece models. */
+  tokenizer?: MtTokenizer;
 }
 
 export interface ModelCatalogFile {

@@ -260,13 +260,26 @@ describe("findMatchingFile", () => {
     expect(result.fileId).toBe(2); // S06E03 → id=2
   });
 
-  it("returns first file as fallback when no clear episode match", () => {
+  it("does not fall back to the first video when no file matches the episode", () => {
     const files = [
       makeFile("/extras/behind-the-scenes.mkv", 1),
       makeFile("/extras/trailer.mkv", 2),
     ];
     const result = findMatchingFile(files, 6, 3);
-    expect(result.file).toBe(files[0]);
+    expect(result.file).toBeNull();
+    expect(result.index).toBe(-1);
+  });
+
+  it("rejects a single season-pack file that is not the requested episode", () => {
+    const files = [makeFile("/Solo.Leveling.S01.2160p.WEB-DL.mkv", 9)];
+    const result = findMatchingFile(files, 1, 7, 7);
+    expect(result.file).toBeNull();
+  });
+
+  it("still accepts a single file whose name is the requested episode", () => {
+    const files = [makeFile("/Solo.Leveling.S01E07.2160p.WEB-DL.mkv", 9)];
+    const result = findMatchingFile(files, 1, 7, 7);
+    expect(result.fileId).toBe(9);
   });
 
   it("penalizes movie-pattern filenames heavily (picks episode over movie file)", () => {
@@ -287,7 +300,7 @@ describe("findMatchingFile", () => {
     expect(result.fileId).toBe(2); // mkv beats nfo
   });
 
-  it("handles single-file torrent (returns it)", () => {
+  it("handles single-file torrent when the filename is that episode", () => {
     const files = [makeFile("/Show.S06E03.1080p.mkv", 42)];
     const result = findMatchingFile(files, 6, 3);
     expect(result.fileId).toBe(42);

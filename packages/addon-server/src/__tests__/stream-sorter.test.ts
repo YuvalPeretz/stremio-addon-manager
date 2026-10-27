@@ -7,6 +7,8 @@ import {
   sortTorrents,
   sortStreams,
   scoreAudioPreference,
+  allSameResolution,
+  pickLowerResolutionTorBox,
 } from "../stream-sorter.js";
 import type { TorrentInfo, Stream } from "../types.js";
 
@@ -124,6 +126,31 @@ describe("scoreTorrent", () => {
     const dual = makeTorrent({ title: "Show S01E01 1080p Dual Audio" });
     const ita = makeTorrent({ title: "Show S01E01 1080p ITA" });
     expect(scoreTorrent(dual)).toBeGreaterThan(scoreTorrent(ita));
+  });
+
+  it("ranks source, HDR, and codec inside one resolution without letting them beat a higher resolution", () => {
+    const bluray = makeTorrent({ title: "Show.1080p.BluRay.REMUX.DV.HEVC" });
+    const webdl = makeTorrent({ title: "Show.1080p.WEB-DL.AVC" });
+    const webrip = makeTorrent({ title: "Show.1080p.WEBRip.x264" });
+    const lowerRes = makeTorrent({ title: "Show.720p.BluRay.REMUX.DV.HEVC" });
+    expect(scoreTorrent(bluray)).toBeGreaterThan(scoreTorrent(webdl));
+    expect(scoreTorrent(webdl)).toBeGreaterThan(scoreTorrent(webrip));
+    expect(scoreTorrent(webrip)).toBeGreaterThan(scoreTorrent(lowerRes));
+  });
+
+  it("does not let seeds or a DVD tag outrank source and HDR", () => {
+    const seededWeb = makeTorrent({ title: "Show 1080p WEB-DL AVC 👤 200" });
+    const bluray = makeTorrent({ title: "Show 1080p BluRay HEVC HDR" });
+    const dvd = makeTorrent({ title: "Show 1080p DVDRip" });
+    const dv = makeTorrent({ title: "Show 1080p DV" });
+    expect(scoreTorrent(bluray)).toBeGreaterThan(scoreTorrent(seededWeb));
+    expect(scoreTorrent(dv)).toBeGreaterThan(scoreTorrent(dvd));
+  });
+
+  it("keeps a 4K WEB-DL above a 1080p remux", () => {
+    const fourK = makeTorrent({ title: "Show.2160p.WEB-DL.AVC" });
+    const remux = makeTorrent({ title: "Show.1080p.BluRay.REMUX.Dolby.Vision.HEVC" });
+    expect(scoreTorrent(fourK)).toBeGreaterThan(scoreTorrent(remux));
   });
 });
 
@@ -339,7 +366,27 @@ describe("sortStreams", () => {
     expect(sorted.map((s) => s.url)).toEqual([torbox.url, local.url, magnet.url]);
   });
 
-  it("sub-sorts magnets by rdCacheScore, then Torrentio Q before S, then quality", () => {
+  it("sorts the best tags of a resolution above weaker tags, and that resolution above a lower one", () => {
+    const webdl = makeStream({
+      name: "TorBox | 4K | AVC | WEB-DL",
+      title: "Show.2160p.WEB-DL.AVC",
+      url: "https://torbox.example/web",
+    });
+    const bluray = makeStream({
+      name: "TorBox | 4K | HEVC | DV | BluRay",
+      title: "Show.2160p.BluRay.HEVC.DV",
+      url: "https://torbox.example/bluray",
+    });
+    const hd = makeStream({
+      name: "TorBox | 1080p | HEVC | Remux",
+      title: "Show.1080p.REMUX.HEVC",
+      url: "https://torbox.example/1080",
+    });
+    const sorted = sortStreams([webdl, hd, bluray]);
+    expect(sorted.map((s) => s.url)).toEqual([bluray.url, webdl.url, hd.url]);
+  });
+
+  it("sub-sorts magnets by resolution and tags, then rdCacheScore, then Torrentio Q before S", () => {
     const magnetQ = makeStream({
       name: "Real-Debrid | Q | 720p",
       title: "Show 720p",
@@ -367,7 +414,7 @@ describe("sortStreams", () => {
       url: "https://torbox.example/file",
     });
     const sorted = sortStreams([magnetS, https, magnetQ, magnetStrong]);
-    expect(sorted.map((s) => s.url)).toEqual([https.url, magnetStrong.url, magnetQ.url, magnetS.url]);
+    expect(sorted.map((s) => s.url)).toEqual([https.url, magnetS.url, magnetQ.url, magnetStrong.url]);
   });
 
   it("treats infoHash streams without an http(s) url as magnets", () => {
@@ -381,5 +428,47 @@ describe("sortStreams", () => {
     const sorted = sortStreams([hashOnly, direct]);
     expect(sorted[0]).toBe(direct);
     expect(sorted[1]).toBe(hashOnly);
+  });
+});
+
+describe("pickLowerResolutionTorBox", () => {
+  function torbox(url: string, resolution: string): Stream {
+    return makeStream({
+      name: `TorBox | ${resolution}`,
+      title: `Show ${resolution}`,
+      url,
+      behaviorHints: { bingeGroup: "torbox", notWebReady: false },
+    });
+  }
+
+  it("is false when resolutions differ", () => {
+    expect(allSameResolution([torbox("https://a", "4K"), torbox("https://b", "1080p")])).toBe(false);
+  });
+
+  it("picks the best TorBox stream below a uniform set", () => {
+    const baseline = [torbox("https://a", "4K"), torbox("https://b", "4K")];
+    const lower = pickLowerResolutionTorBox(baseline, [
+      torbox("https://c", "4K"),
+      torbox("https://d", "720p"),
+      torbox("https://e", "1080p"),
+    ]);
+    expect(lower?.url).toBe("https://e");
+  });
+
+  it("picks the better file when several share that lower resolution", () => {
+    const baseline = [torbox("https://a", "4K")];
+    const lower = pickLowerResolutionTorBox(baseline, [
+      torbox("https://web", "1080p WEB-DL AVC"),
+      torbox("https://ray", "1080p BluRay HEVC HDR"),
+      torbox("https://sd", "720p BluRay Remux"),
+    ]);
+    expect(lower?.url).toBe("https://ray");
+  });
+
+  it("returns null when the set is mixed or nothing lower was already fetched", () => {
+    const mixed = [torbox("https://a", "4K"), torbox("https://b", "1080p")];
+    expect(pickLowerResolutionTorBox(mixed, [torbox("https://c", "720p")])).toBeNull();
+    const uniform = [torbox("https://a", "1080p")];
+    expect(pickLowerResolutionTorBox(uniform, [torbox("https://b", "4K")])).toBeNull();
   });
 });

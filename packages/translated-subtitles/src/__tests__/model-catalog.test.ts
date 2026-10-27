@@ -35,6 +35,7 @@ describe("model catalog", () => {
       "gemma3-1b-q4_k_m",
       "qwen3-4b-q4_k_m",
       "nllb-200-distilled-600m-int8",
+      "quickmt-en-he",
     ]);
     for (const model of getModelCatalog()) {
       expect(model.hwBlurb.length).toBeGreaterThan(0);
@@ -51,6 +52,17 @@ describe("model catalog", () => {
     expect(entry.expectedBytes).toBe(622595991);
     expect(entry.sha256).toHaveLength(64);
     expect(entry.filename.endsWith(".gguf")).toBe(false);
+    expect(entry.tokenizer).toBe("nllb");
+  });
+
+  it("resolves QuickMT English→Hebrew as a bilingual CT2 model", () => {
+    const entry = requireModelById("quickmt-en-he");
+    expect(entry.engine).toBe("mt");
+    expect(entry.tokenizer).toBe("quickmt");
+    expect(entry.filename).toBe("quickmt-en-he");
+    expect(entry.files).toEqual(["model.bin", "src.spm.model", "tgt.spm.model", "config.json"]);
+    expect(entry.expectedBytes).toBe(409915789);
+    expect(entry.sha256).toBe("11034ce42e575f7153cf31acf09f82036f5a49fae66e6b82a9cf470b472b3eb3");
   });
 
   it("returns undefined for unknown ids", () => {

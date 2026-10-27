@@ -20,7 +20,14 @@ import {
   type ScoredTorrent,
   type CinemetaVideo,
 } from "./episode-matching.js";
-import { sortStreams, buildStreamName, scoreTorrent, scoreRdInstantAvailability } from "./stream-sorter.js";
+import {
+  sortStreams,
+  buildStreamName,
+  scoreTorrent,
+  scoreRdInstantAvailability,
+  allSameResolution,
+  pickLowerResolutionTorBox,
+} from "./stream-sorter.js";
 import { fetchSubtitles } from "./subtitle-fetcher.js";
 import type { LocalLibraryManager } from "./local-library/manager.js";
 import {
@@ -251,6 +258,12 @@ async function processRealDebridStream(
         absoluteEpisode,
         knownFileIdx
       );
+      if (!matchResult.file || matchResult.index < 0) {
+        console.log(
+          `No file matches S${seasonEpisode.season}E${seasonEpisode.episode} — skipping torrent`
+        );
+        return { kind: "null" };
+      }
       selectedFileId = matchResult.fileId;
       selectedFileIndex = matchResult.index;
       console.log(
@@ -1082,6 +1095,14 @@ async function _executeStreamRequest(
         torboxStreams = resolved;
         if (torboxStreams.length > 0) {
           console.log(`[torbox] Got ${torboxStreams.length} streams (RD fallback)`);
+        }
+      } else if (streams.length >= config.maxStreams && allSameResolution(streams)) {
+        const extra = pickLowerResolutionTorBox(streams, resolved);
+        if (extra) {
+          torboxStreams = [extra];
+          console.log(
+            `[torbox] Appending lower-resolution option alongside ${streams.length} same-resolution streams`
+          );
         }
       }
     }

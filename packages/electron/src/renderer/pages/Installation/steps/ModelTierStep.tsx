@@ -33,7 +33,7 @@ function ModelTierStep({ value, onChange, onNext, onBack }: ModelTierStepProps) 
         <Title level={4}>Translation model</Title>
         <Text type="secondary">
           Weights download on the target machine (not inside this app). Qwen3-1.7B is the recommended
-          minimum. NLLB-200 is a fast literal machine-translation engine (not an LLM). Ultra-light 0.6B
+          minimum. NLLB-200 and QuickMT are fast machine-translation engines (not LLMs). QuickMT is English to Hebrew only. Ultra-light 0.6B
           runs on tight hosts but is experimental.
         </Text>
       </Flex>

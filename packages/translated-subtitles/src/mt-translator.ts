@@ -3,8 +3,8 @@
  * Glossary is LLM-only — this translator never sends it.
  */
 
-import { requireFloresCode } from "./flores-lang.js";
-import type { FetchLike } from "./types.js";
+import { requireFloresCode, toFloresCode } from "./flores-lang.js";
+import type { FetchLike, MtTokenizer } from "./types.js";
 import { TranslationError, type CueTranslator } from "./translator.js";
 
 interface MtTranslateResponse {
@@ -16,7 +16,8 @@ export class MtTranslator implements CueTranslator {
   constructor(
     private readonly serverUrl: string,
     private readonly targetLang: string,
-    private readonly fetchFn: FetchLike = fetch
+    private readonly fetchFn: FetchLike = fetch,
+    private readonly tokenizer: MtTokenizer = "nllb"
   ) {}
 
   async translateTexts(texts: string[], sourceLang?: string): Promise<string[]> {
@@ -26,8 +27,18 @@ export class MtTranslator implements CueTranslator {
     let source: string;
     let target: string;
     try {
-      source = requireFloresCode(sourceLang, "source");
-      target = requireFloresCode(this.targetLang, "target");
+      if (this.tokenizer === "quickmt") {
+        source = toFloresCode(sourceLang) ?? "";
+        target = toFloresCode(this.targetLang) ?? "";
+        if (source !== "eng_Latn" || target !== "heb_Hebr") {
+          throw new TranslationError(
+            "QuickMT English→Hebrew only translates an English subtitle into Hebrew (TARGET_LANG heb)."
+          );
+        }
+      } else {
+        source = requireFloresCode(sourceLang, "source");
+        target = requireFloresCode(this.targetLang, "target");
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       throw new TranslationError(message);
@@ -39,16 +50,16 @@ export class MtTranslator implements CueTranslator {
       body: JSON.stringify({ source, target, texts }),
     });
     if (!response.ok) {
-      throw new TranslationError(`NLLB translate failed: HTTP ${response.status}`);
+      throw new TranslationError(`MT translate failed: HTTP ${response.status}`);
     }
     const body = (await response.json()) as MtTranslateResponse;
     if (!Array.isArray(body.translations) || !body.translations.every((t) => typeof t === "string")) {
-      const errMsg = typeof body.error === "string" ? body.error : "NLLB translate returned no translations";
+      const errMsg = typeof body.error === "string" ? body.error : "MT translate returned no translations";
       throw new TranslationError(errMsg);
     }
     if (body.translations.length !== texts.length) {
       throw new TranslationError(
-        `NLLB translated ${body.translations.length} cues, expected ${texts.length}`
+        `MT translated ${body.translations.length} cues, expected ${texts.length}`
       );
     }
     return body.translations;

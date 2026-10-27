@@ -263,8 +263,16 @@ export const TRANSLATED_SUBTITLES_ENV_METADATA: Record<string, EnvVarMetadata> =
     generateable: false,
     source: "catalog",
   },
+  MT_TOKENIZER: {
+    description: "CTranslate2 token format: nllb (FLORES prefix) or quickmt (src/tgt sentencepiece)",
+    type: "string",
+    required: false,
+    sensitive: false,
+    generateable: false,
+    source: "catalog",
+  },
   MT_MODEL_FILES: {
-    description: "Comma-separated snapshot filenames for the NLLB directory",
+    description: "Comma-separated snapshot filenames for the CTranslate2 model directory",
     type: "string",
     required: false,
     sensitive: false,
@@ -379,6 +387,7 @@ export function getTranslatedSubtitlesEnvVarsFromConfig(config: AddonManagerConf
     if (model.files && model.files.length > 0) {
       envVars.MT_MODEL_FILES = model.files.join(",");
     }
+    envVars.MT_TOKENIZER = model.tokenizer === "quickmt" ? "quickmt" : "nllb";
   } else {
     envVars.LLM_MODEL_URL = model.url;
     envVars.LLM_MODEL_FILENAME = model.filename;

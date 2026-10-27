@@ -43,6 +43,22 @@ describe("MtTranslator", () => {
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
+  it("QuickMT accepts English into Hebrew and rejects other pairs", async () => {
+    const fetchFn: FetchLike = vi.fn(async () => {
+      return new Response(JSON.stringify({ translations: ["שלום"] }), { status: 200 });
+    });
+    const translator = new MtTranslator("http://127.0.0.1:18082", "heb", fetchFn, "quickmt");
+    await expect(translator.translateTexts(["Hello"], "eng")).resolves.toEqual(["שלום"]);
+    await expect(translator.translateTexts(["Hola"], "spa")).rejects.toBeInstanceOf(TranslationError);
+    await expect(
+      new MtTranslator("http://127.0.0.1:18082", "spa", fetchFn, "quickmt").translateTexts(
+        ["Hello"],
+        "eng"
+      )
+    ).rejects.toBeInstanceOf(TranslationError);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
   it("fails closed on cue count mismatch", async () => {
     const fetchFn: FetchLike = vi.fn(async () => {
       return new Response(JSON.stringify({ translations: ["only-one"] }), {

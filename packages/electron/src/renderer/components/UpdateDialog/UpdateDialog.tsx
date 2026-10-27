@@ -42,9 +42,7 @@ export const UpdateDialog: React.FC = () => {
     }
 
     const handleProgress = (data: { addonId: string; progress: any }) => {
-      if (data.addonId === selectedAddonId) {
-        setUpdateProgress(data.progress);
-      }
+      setUpdateProgress(data.progress);
     };
 
     window.electron.update.onProgress(handleProgress);
@@ -52,7 +50,7 @@ export const UpdateDialog: React.FC = () => {
     return () => {
       window.electron.update.removeProgressListener();
     };
-  }, [selectedAddonId]);
+  }, [setUpdateProgress]);
 
   const fetchUpdateInfo = async () => {
     if (!selectedAddonId) return;

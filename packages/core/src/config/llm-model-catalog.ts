@@ -21,6 +21,8 @@ export interface LlmModelCatalogEntry {
   expectedBytes?: number;
   /** Extra snapshot files for MT (CTranslate2 directory). */
   files?: readonly string[];
+  /** How the CTranslate2 sidecar tokenizes this model. */
+  tokenizer?: "nllb" | "quickmt";
 }
 
 /** Pinned bartowski Q4_K_M (live-probed 2026-08-15). */
@@ -96,6 +98,24 @@ export const LLM_MODEL_CATALOG: readonly LlmModelCatalogEntry[] = [
     sha256: "ed1beaf75134de7505315a5223162f56acff397eff6b50638a500d3936fe707b",
     expectedBytes: 622595991,
     files: ["model.bin", "sentencepiece.bpe.model", "config.json", "shared_vocabulary.txt"],
+    tokenizer: "nllb",
+  },
+  {
+    id: "quickmt-en-he",
+    label: "QuickMT English→Hebrew",
+    family: "QuickMT",
+    engine: "mt",
+    tier: "Fast",
+    ramBlurb: "~1 GB RAM",
+    qualityBlurb: "English to Hebrew only · faster than NLLB-600M",
+    recommended: false,
+    experimental: true,
+    url: "https://huggingface.co/quickmt/quickmt-en-he/resolve/main/model.bin",
+    filename: "quickmt-en-he",
+    sha256: "11034ce42e575f7153cf31acf09f82036f5a49fae66e6b82a9cf470b472b3eb3",
+    expectedBytes: 409915789,
+    files: ["model.bin", "src.spm.model", "tgt.spm.model", "config.json"],
+    tokenizer: "quickmt",
   },
 ];
 
@@ -121,11 +141,15 @@ export function engineSwitchConfirmCopy(fromId: string, toId: string): string {
   const to = getLlmModelCatalogEntry(toId);
   const fromEng = from ? catalogEngine(from) : "llm";
   const toEng = to ? catalogEngine(to) : "llm";
+  const toLabel = to?.label ?? "the new model";
   if (fromEng === "llm" && toEng === "mt") {
-    return "This will stop llama, delete GGUFs in the models directory, download NLLB, and start CTranslate2.";
+    return `This will stop llama, delete GGUFs in the models directory, download ${toLabel}, and start CTranslate2.`;
   }
   if (fromEng === "mt" && toEng === "llm") {
-    return "This will stop CTranslate2, delete the NLLB model directory, download the GGUF, and start llama.";
+    return `This will stop CTranslate2, delete the translation model directory, download ${toLabel}, and start llama.`;
+  }
+  if (fromEng === "mt" && toEng === "mt") {
+    return `This will replace the translation model with ${toLabel} and restart CTranslate2.`;
   }
   return "This deletes the previous GGUF in the models directory, then downloads the new file. Llama will reload.";
 }

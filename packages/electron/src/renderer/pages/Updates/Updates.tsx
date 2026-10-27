@@ -34,8 +34,9 @@ import type { ColumnsType } from "antd/es/table";
 import type { UploadProps } from "antd";
 import { addonListAtom } from "../../atoms/addonAtoms";
 import { updateProgressAtom } from "../../atoms/updateAtoms";
-import type { AddonManagerConfig, AddonMetadata } from "@stremio-addon-manager/core";
+import type { AddonManagerConfig, AddonMetadata, AddonProduct } from "@stremio-addon-manager/core";
 import { isCustomScriptInstall } from "../../utils/addonUrls";
+import { exampleDeployScript } from "../Installation/steps/DeployScriptStep";
 import styles from "./Updates.module.scss";
 
 const { Title, Text, Paragraph } = Typography;
@@ -54,6 +55,8 @@ async function readUploadAsText(file: File): Promise<string> {
 function promptDeployScript(options: {
   title: string;
   description: string;
+  /** When set, shows the same "Load example" action as script installation. */
+  exampleScript?: string;
 }): Promise<string | null> {
   return new Promise((resolve) => {
     let draft = "";
@@ -83,9 +86,21 @@ function promptDeployScript(options: {
           <Paragraph type="secondary" style={{ marginBottom: 0 }}>
             {options.description}
           </Paragraph>
-          <Upload beforeUpload={beforeUpload} showUploadList={false} accept=".sh,text/*">
-            <Button icon={<FiUpload />}>Pick script file…</Button>
-          </Upload>
+          <Space wrap>
+            <Upload beforeUpload={beforeUpload} showUploadList={false} accept=".sh,text/*">
+              <Button icon={<FiUpload />}>Pick script file…</Button>
+            </Upload>
+            {options.exampleScript ? (
+              <Button
+                onClick={() => {
+                  draft = options.exampleScript || "";
+                  modal.update({ content: renderBody(draft) });
+                }}
+              >
+                Load example
+              </Button>
+            ) : null}
+          </Space>
           <TextArea
             rows={12}
             defaultValue={value}
@@ -263,11 +278,18 @@ function Updates() {
 
       if (!result.success && result.requiresConfirm && result.scriptHash) {
         const scriptHash = result.scriptHash;
+        // A script the user just pasted or loaded is the confirmation.
+        if (scriptContent?.trim()) {
+          await handleUpdateAddon(addonId, forceUpdate, scriptHash, scriptContent);
+          return;
+        }
         Modal.confirm({
           title: "Deploy script changed",
-          content: `The deploy script hash is now ${scriptHash.slice(0, 16)}…. Confirm to run the update with this script.`,
+          content: `The deploy script hash is now ${scriptHash.slice(0, 16)}…. Confirm to run the update with this script. The dialog closes and the step is shown on this page. A Docker build can take several minutes.`,
           okText: "Confirm and update",
-          onOk: () => handleUpdateAddon(addonId, forceUpdate, scriptHash, scriptContent),
+          onOk: () => {
+            void handleUpdateAddon(addonId, forceUpdate, scriptHash, scriptContent);
+          },
         });
         return;
       }
@@ -291,27 +313,70 @@ function Updates() {
     }
   }
 
+  async function replaceScriptAndForceUpdate(addonId: string): Promise<void> {
+    let product: AddonProduct = "streaming";
+    try {
+      const cfgResult = await window.electron.config.load(addonId);
+      const loaded = cfgResult.success ? (cfgResult.data as AddonManagerConfig | undefined) : undefined;
+      if (loaded?.product === "translated_subtitles") {
+        product = "translated_subtitles";
+      }
+    } catch {
+      // Example still loads; streaming is the default body.
+    }
+    const pasted = await promptDeployScript({
+      title: "Replace deploy script",
+      description:
+        "This replaces the script stored for this addon and runs it now with DEPLOY_MODE=update. Paste, pick a .sh file, or load the same Gateway example as installation.",
+      exampleScript: exampleDeployScript(product),
+    });
+    if (!pasted) {
+      return;
+    }
+    await handleUpdateAddon(addonId, true, undefined, pasted);
+  }
+
   async function handleForceUpdate(addonId: string) {
     const isCustom = customScriptAddonIds.has(addonId);
+    if (isCustom) {
+      const modal = Modal.confirm({
+        title: "Force Update (custom script)",
+        width: 560,
+        content: (
+          <div>
+            <p>
+              This runs your deploy script with <strong>DEPLOY_MODE=update</strong>, staging fresh ADDON + ADMIN
+              artifacts (even if version checks look up to date).
+            </p>
+            <p><strong>Use this if:</strong></p>
+            <ul>
+              <li>You changed the bundled addon-server build and need to redeploy</li>
+              <li>Gateway apps drifted and you want a full script-driven refresh</li>
+              <li>A previous update partially failed</li>
+            </ul>
+            <p style={{ marginTop: 12, color: "#faad14" }}>
+              <strong>Note:</strong> No automatic backup/rollback — recovery is owned by your Gateway script.
+            </p>
+            <Button
+              style={{ marginTop: 12 }}
+              onClick={() => {
+                modal.destroy();
+                void replaceScriptAndForceUpdate(addonId);
+              }}
+            >
+              Replace script and update
+            </Button>
+          </div>
+        ),
+        onOk: () => handleUpdateAddon(addonId, true),
+        okText: "Force Update",
+        okButtonProps: { danger: true },
+      });
+      return;
+    }
     Modal.confirm({
-      title: isCustom ? "Force Update (custom script)" : "Force Update",
-      content: isCustom ? (
-        <div>
-          <p>
-            This runs your deploy script with <strong>DEPLOY_MODE=update</strong>, staging fresh ADDON + ADMIN
-            artifacts (even if version checks look up to date).
-          </p>
-          <p><strong>Use this if:</strong></p>
-          <ul>
-            <li>You changed the bundled addon-server build and need to redeploy</li>
-            <li>Gateway apps drifted and you want a full script-driven refresh</li>
-            <li>A previous update partially failed</li>
-          </ul>
-          <p style={{ marginTop: 12, color: "#faad14" }}>
-            <strong>Note:</strong> No automatic backup/rollback — recovery is owned by your Gateway script.
-          </p>
-        </div>
-      ) : (
+      title: "Force Update",
+      content: (
         <div>
           <p>This will force reinstall all packages to the latest version, even if already up to date.</p>
           <p><strong>Use this if:</strong></p>
@@ -623,7 +688,7 @@ function Updates() {
           type="info"
           showIcon
           message="Custom script updates"
-          description="Force Update runs your deploy script (DEPLOY_MODE=update) with dual artifacts. Scripts are fetched from managementUrl when reachable; otherwise the last stored script is used. If neither is available, you can paste/pick the script. Hash changes still require confirm. Rollback is not supported."
+          description="Force Update runs your deploy script (DEPLOY_MODE=update) with dual artifacts. Use the current script, or Replace script and update to paste, pick, or load a new one the same way as installation. A fetched script whose hash changed still asks you to confirm. Rollback is not supported."
         />
       )}
 
@@ -666,7 +731,7 @@ function Updates() {
               status={updateProgress.status === "failed" ? "exception" : "active"}
             />
             <Text type="secondary">
-              Current step: {updateProgress.step}
+              Current step: {updateProgress.step}. A Docker build can sit on this step for several minutes.
             </Text>
           </Flex>
         </Card>

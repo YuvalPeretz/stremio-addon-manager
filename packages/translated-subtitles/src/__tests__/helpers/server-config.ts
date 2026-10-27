@@ -27,6 +27,7 @@ export function testServerConfig(overrides: Partial<ServerConfig> = {}): ServerC
     mtModelFiles: [],
     mtPython: "",
     mtCt2Bin: "",
+    mtTokenizer: "nllb",
     openSubtitlesBaseUrl: "https://opensubtitles-v3.strem.io",
     subtitleCacheDir: "/tmp",
     subtitleCacheTtlSec: 60,

@@ -65,6 +65,11 @@ export class MtSidecar {
   private lastHealth: LlmHealth;
   private readyPromise: Promise<void> | undefined;
   private lastPruned: string[] = [];
+  private restartBlocked = false;
+
+  blocksRestart(): boolean {
+    return this.restartBlocked;
+  }
 
   constructor(
     private readonly config: ServerConfig,
@@ -120,6 +125,7 @@ export class MtSidecar {
   }
 
   private async startOrAttach(options?: { skipAttach?: boolean }): Promise<void> {
+    this.restartBlocked = false;
     if (!options?.skipAttach) {
       const existing = await this.probeHealth();
       if (existing.healthy) {
@@ -145,8 +151,9 @@ export class MtSidecar {
     if (options?.skipAttach) {
       const stillUp = await this.probeHealth();
       if (stillUp.healthy) {
+        this.restartBlocked = true;
         console.log(
-          `CTranslate2 still attached at ${this.config.mtServerUrl}; NLLB files are on disk. Restart the nllb service to load them.`
+          `CTranslate2 still attached at ${this.config.mtServerUrl}; model files are on disk. Restart that service to load ${this.config.mtTokenizer}.`
         );
         return;
       }
@@ -155,15 +162,26 @@ export class MtSidecar {
     const host = parseServerHost(this.config.mtServerUrl);
     const port = parseServerPort(this.config.mtServerUrl);
     const bin = this.config.mtCt2Bin.trim();
+    const tokenizer = this.config.mtTokenizer === "quickmt" ? "quickmt" : "nllb";
     let command: string;
     let args: string[];
     if (bin) {
       command = bin;
-      args = ["--model", modelDir, "--host", host, "--port", String(port)];
+      args = ["--model", modelDir, "--host", host, "--port", String(port), "--tokenizer", tokenizer];
     } else {
       command = this.config.mtPython.trim() || whichSync("python3") || whichSync("python") || "python3";
       const script = resolveMtSidecarScript();
-      args = [script, "--model", modelDir, "--host", host, "--port", String(port)];
+      args = [
+        script,
+        "--model",
+        modelDir,
+        "--host",
+        host,
+        "--port",
+        String(port),
+        "--tokenizer",
+        tokenizer,
+      ];
     }
 
     console.log(`Starting CTranslate2: ${command} ${args.join(" ")}`);

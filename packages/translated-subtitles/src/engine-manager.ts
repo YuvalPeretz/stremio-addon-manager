@@ -24,6 +24,8 @@ export interface EngineSidecar {
   stop(): Promise<void>;
   probeHealth(): Promise<LlmHealth>;
   getStatus(): LlmHealth;
+  /** True when a sibling process stayed up and did not load the new model. */
+  blocksRestart?(): boolean;
 }
 
 export interface LlmEngineSidecar extends EngineSidecar {
@@ -72,7 +74,8 @@ export class EngineManager {
         this.mtTranslator = new MtTranslator(
           this.config.mtServerUrl,
           this.config.targetLang,
-          this.fetchFn
+          this.fetchFn,
+          this.config.mtTokenizer
         );
       }
       return this.mtTranslator;
@@ -154,11 +157,12 @@ export class EngineManager {
       await this.mt.ensureReady({ skipAttach: true });
       const mt = this.mt.getStatus();
       const leftoverLlm = await this.llm.probeHealth();
+      const mtBlocked = this.mt.blocksRestart?.() ?? false;
       return {
         modelId: this.config.llmModelId,
         engine: "mt",
         filename: entry.filename,
-        attachedSibling: leftoverLlm.healthy,
+        attachedSibling: leftoverLlm.healthy || mtBlocked,
         pruned,
         mt,
         llm: leftoverLlm.healthy ? leftoverLlm : undefined,
