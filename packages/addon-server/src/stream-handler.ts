@@ -28,6 +28,7 @@ import {
   allSameResolution,
   pickLowerResolutionTorBox,
 } from "./stream-sorter.js";
+import { torrentTitleMatchesMovie } from "./title-matching.js";
 import { fetchSubtitles } from "./subtitle-fetcher.js";
 import type { LocalLibraryManager } from "./local-library/manager.js";
 import {
@@ -702,6 +703,22 @@ async function _executeStreamRequest(
       if (matchingTorrents.length === 0) {
         console.log(
           `⚠️  WARNING: No torrents found that clearly match S${seasonEpisode.season}E${seasonEpisode.episode}. Using best available torrents.`
+        );
+      }
+    } else {
+      // Movies: drop releases whose title is a different film (Torrentio can
+      // still list them under the right IMDB id). Fall back if nothing matches.
+      const titleMatched = filteredTorrents.filter((t) =>
+        torrentTitleMatchesMovie(t.title, metadata.name, metadata.year)
+      );
+      if (titleMatched.length > 0) {
+        console.log(
+          `Movie title filter: kept ${titleMatched.length}/${filteredTorrents.length} torrents matching "${metadata.name}"`
+        );
+        filteredTorrents = titleMatched;
+      } else {
+        console.log(
+          `⚠️  WARNING: No torrents matched movie title "${metadata.name}". Keeping unfiltered list.`
         );
       }
     }
